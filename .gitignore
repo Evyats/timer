@@ -1,0 +1,10 @@
+build/
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.obj
+*.a
+*.d
+*.tmp
