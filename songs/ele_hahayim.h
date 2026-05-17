@@ -6,7 +6,7 @@
 
 #include <PiezoMidiPlayer.h>
 
-const PiezoEvent PIEZO_SONG_EVENTS[] PROGMEM = {
+const PiezoEvent ELE_HAHAYIM_SONG_EVENTS[] PROGMEM = {
   { 0, 0, 1 },
   { 0, 1, 494 },
   { 0, 2, 165 },
@@ -137,8 +137,8 @@ const PiezoEvent PIEZO_SONG_EVENTS[] PROGMEM = {
 };
 
 const PiezoSong ELE_HAHAYIM_SONG = {
-  PIEZO_SONG_EVENTS,
-  sizeof(PIEZO_SONG_EVENTS) / sizeof(PIEZO_SONG_EVENTS[0]),
+  ELE_HAHAYIM_SONG_EVENTS,
+  sizeof(ELE_HAHAYIM_SONG_EVENTS) / sizeof(ELE_HAHAYIM_SONG_EVENTS[0]),
   3,
   24500
 };

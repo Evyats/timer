@@ -148,6 +148,7 @@ const PiezoVoice PIEZO_VOICES_WITH_ACTIVE[] = {
 };
 
 const PiezoVoice PIEZO_VOICES_PASSIVE_ONLY[] = {
+  { ACTIVE_PIEZO_PIN, 0, true, true },
   { MAIN_PIEZO_PIN, 1 },
   { HARMONY_PIEZO_PIN, 2 },
 };
