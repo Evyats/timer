@@ -913,6 +913,7 @@ void handleLightSleep() {
 
 void enterLightSleep() {
   Serial.println("Entering light sleep. PIR motion wakes the timer.");
+  Serial.flush();
 
   display.ssd1306_command(SSD1306_DISPLAYOFF);
   gpio_wakeup_enable((gpio_num_t)PIR_PIN, GPIO_INTR_HIGH_LEVEL);
@@ -920,6 +921,8 @@ void enterLightSleep() {
   esp_light_sleep_start();
   gpio_wakeup_disable((gpio_num_t)PIR_PIN);
 
+  delay(50);
+  Serial.begin(115200);
   Serial.println("Woke from light sleep.");
 
   display.ssd1306_command(SSD1306_DISPLAYON);
