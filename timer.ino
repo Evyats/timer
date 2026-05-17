@@ -6,7 +6,7 @@
 #include <Wire.h>
 
 #include "BatteryMonitor.h"
-#include "belle.h"
+#include "songs/Songs.h"
 
 /*
   OLED timer with rotary encoder, two passive piezos, active piezo, LED,
@@ -77,10 +77,10 @@ const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
 const int CLOCK_AM_PM_GAP = 6;
 const int CLOCK_AM_PM_Y_OFFSET = 8;
 const int OLED_ADDRESS = 0x3C;
-const bool SHOW_SECTION_BORDERS = true;
-const bool SHOW_STATE_TEXT = false;
+const bool SHOW_SECTION_BORDERS = false;
+const bool SHOW_STATE_TEXT = true;
 const bool SHOW_BATTERY_TEXT = true;
-const bool CENTER_BATTERY_ICON = true;
+const bool CENTER_BATTERY_ICON = false;
 const bool USE_12_HOUR_CLOCK = false;
 
 //// Regular ESP32 pin assignment:
@@ -104,7 +104,7 @@ const int SDA_PIN = 4;
 const int SCL_PIN = 5;
 const int BATTERY_ADC_PIN = 0;  // ADC1 pin.
 const int ENCODER_S1_PIN = 1;
-const int ENCODER_S2_PIN = 3;
+const int ENCODER_S2_PIN = 10;
 const int ENCODER_BUTTON_PIN = 6;
 const int PIR_PIN = 20;
 const int SOUND_PIN = 21;
@@ -127,7 +127,7 @@ const uint32_t SOUND_TRIGGER_WINDOW_MS = 250;
 const uint32_t SOUND_TRIGGER_COOLDOWN_MS = 600;
 const bool LOG_RAW_SOUND_EDGES = false;
 
-const uint8_t ACTIVE_PIEZO_VOICE = 2;
+const uint8_t ACTIVE_PIEZO_VOICE = 0;
 const int PIEZO_SELF_TEST_TONE_HZ = 880;
 const int PIEZO_SELF_TEST_MS = 300;
 const uint16_t PIEZO_SLIDE_UPDATE_INTERVAL_MS = 10;
@@ -142,14 +142,14 @@ const float BATTERY_R1_OHMS = 100000.0;
 const float BATTERY_R2_OHMS = 100000.0;
 
 const PiezoVoice PIEZO_VOICES_WITH_ACTIVE[] = {
-  { MAIN_PIEZO_PIN, 0 },
-  { HARMONY_PIEZO_PIN, 1 },
-  { ACTIVE_PIEZO_PIN, 2, true },
+  { ACTIVE_PIEZO_PIN, 0, true },
+  { MAIN_PIEZO_PIN, 1 },
+  { HARMONY_PIEZO_PIN, 2 },
 };
 
 const PiezoVoice PIEZO_VOICES_PASSIVE_ONLY[] = {
-  { MAIN_PIEZO_PIN, 0 },
-  { HARMONY_PIEZO_PIN, 1 },
+  { MAIN_PIEZO_PIN, 1 },
+  { HARMONY_PIEZO_PIN, 2 },
 };
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -163,6 +163,7 @@ BatteryMonitor batteryMonitor(
   BATTERY_UPDATE_MS,
   BATTERY_SAMPLE_INTERVAL_MS
 );
+const PiezoSong* currentSong = nullptr;
 
 DeviceMode mode = MODE_SET_HOUR;
 
@@ -204,6 +205,7 @@ uint32_t lastButtonChangeMs = 0;
 
 void setup() {
   Serial.begin(115200);
+  randomSeed(micros());
 
   pinMode(ENCODER_S1_PIN, INPUT_PULLUP);
   pinMode(ENCODER_S2_PIN, INPUT_PULLUP);
@@ -837,6 +839,13 @@ void enterLightSleep() {
 }
 
 void startMusic(bool includeActivePiezo) {
+  currentSong = pickRandomSong();
+  if (currentSong == nullptr) {
+    Serial.println("No songs configured.");
+    enterReadyMode();
+    return;
+  }
+
   mode = MODE_MUSIC;
   alarmPlaying = true;
   activePiezoEnabled = includeActivePiezo;
@@ -845,14 +854,14 @@ void startMusic(bool includeActivePiezo) {
   nextActivePiezoLedEvent = 0;
   writeActivePiezoLed(false);
   configurePiezoVoices(includeActivePiezo);
-  piezoPlayer.play(PIEZO_SONG, false);
+  piezoPlayer.play(*currentSong, false);
   if (includeActivePiezo) {
     showMusic();
   } else {
     showClock(true, "MUSIC");
   }
 
-  Serial.println(includeActivePiezo ? "Playing Belle alarm." : "Playing Belle without active piezo.");
+  Serial.println(includeActivePiezo ? "Playing random alarm song." : "Playing random song without active piezo.");
   if (includeActivePiezo) {
     Serial.print("Sound detector ignored until song position ");
     Serial.print(soundIgnoredUntilSongMs);
@@ -876,6 +885,14 @@ void stopMusic() {
   writeActivePiezoLed(false);
   configurePiezoVoices(true);
   enterReadyMode();
+}
+
+const PiezoSong* pickRandomSong() {
+  if (TIMER_SONG_COUNT == 0) {
+    return nullptr;
+  }
+
+  return TIMER_SONGS[random(TIMER_SONG_COUNT)];
 }
 
 void updateMusic() {
@@ -939,11 +956,15 @@ void updateSensors() {
 }
 
 uint32_t findLastActivePiezoEventMs() {
+  if (currentSong == nullptr) {
+    return 0;
+  }
+
   uint32_t lastActiveEventMs = 0;
 
-  for (uint32_t i = 0; i < PIEZO_SONG.eventCount; i++) {
+  for (uint32_t i = 0; i < currentSong->eventCount; i++) {
     PiezoEvent event;
-    memcpy_P(&event, &PIEZO_SONG.events[i], sizeof(event));
+    memcpy_P(&event, &currentSong->events[i], sizeof(event));
 
     if (event.voice == ACTIVE_PIEZO_VOICE) {
       lastActiveEventMs = event.timeMs;
@@ -1045,9 +1066,13 @@ void printClockToSerial() {
 }
 
 void updateActivePiezoLed(uint32_t songPositionMs) {
-  while (nextActivePiezoLedEvent < PIEZO_SONG.eventCount) {
+  if (currentSong == nullptr) {
+    return;
+  }
+
+  while (nextActivePiezoLedEvent < currentSong->eventCount) {
     PiezoEvent event;
-    memcpy_P(&event, &PIEZO_SONG.events[nextActivePiezoLedEvent], sizeof(event));
+    memcpy_P(&event, &currentSong->events[nextActivePiezoLedEvent], sizeof(event));
 
     if (event.timeMs > songPositionMs) {
       break;
