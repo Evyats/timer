@@ -5,6 +5,7 @@
 #include <PiezoMidiPlayer.h>
 #include <Wire.h>
 
+#include "BatteryMonitor.h"
 #include "belle.h"
 
 /*
@@ -69,7 +70,14 @@ enum DeviceMode {
 const int SCREEN_WIDTH = 128;
 const int SCREEN_HEIGHT = 64;
 const int HEADER_HEIGHT = 16;
+const int CONTENT_TOP = HEADER_HEIGHT + 1;
+const int CONTENT_HEIGHT = SCREEN_HEIGHT - HEADER_HEIGHT - 1;
+const int CLOCK_TEXT_SIZE = 3;
+const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
+const int CLOCK_AM_PM_GAP = 6;
+const int CLOCK_AM_PM_Y_OFFSET = 8;
 const int OLED_ADDRESS = 0x3C;
+const bool SHOW_BATTERY_TEXT = true;
 
 // Regular ESP32 pin assignment:
 // const int SDA_PIN = 21;
@@ -108,7 +116,7 @@ const int PIR_MOTION_STATE = HIGH;
 const int SOUND_DETECTED_STATE = LOW;
 const unsigned long PIR_WARMUP_MS = 3000;
 const uint32_t PIR_DISPLAY_HOLD_MS = 2000;
-const uint32_t LIGHT_SLEEP_AFTER_MS = 10000;
+const uint32_t LIGHT_SLEEP_AFTER_MS = 120000;
 const bool ENABLE_LIGHT_SLEEP = true;
 const uint8_t SOUND_TRIGGER_MIN_PULSES = 3;
 const uint32_t SOUND_TRIGGER_WINDOW_MS = 250;
@@ -124,40 +132,10 @@ const int STEP_SECONDS = 3;
 const int MAX_SECONDS = 99 * 60 + 59;
 const int BATTERY_ADC_SAMPLES = 32;
 const int BATTERY_PERCENT_SMOOTHING_WINDOW = 8;
-const uint32_t BATTERY_UPDATE_MS = 5000;
+const uint32_t BATTERY_UPDATE_MS = 3000;
 const uint32_t BATTERY_SAMPLE_INTERVAL_MS = 2;
 const float BATTERY_R1_OHMS = 100000.0;
 const float BATTERY_R2_OHMS = 100000.0;
-const float BATTERY_DIVIDER_MULTIPLIER = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
-
-struct BatteryPoint {
-  float volts;
-  int percent;
-};
-
-const BatteryPoint LIPO_CURVE[] = {
-  {4.20, 100},
-  {4.15, 95},
-  {4.11, 90},
-  {4.08, 85},
-  {4.02, 80},
-  {3.98, 75},
-  {3.95, 70},
-  {3.91, 65},
-  {3.87, 60},
-  {3.85, 55},
-  {3.83, 50},
-  {3.80, 45},
-  {3.79, 40},
-  {3.77, 35},
-  {3.75, 30},
-  {3.73, 25},
-  {3.71, 20},
-  {3.69, 15},
-  {3.61, 10},
-  {3.50, 5},
-  {3.30, 0}
-};
 
 const PiezoVoice PIEZO_VOICES_WITH_ACTIVE[] = {
   { MAIN_PIEZO_PIN, 0 },
@@ -172,6 +150,15 @@ const PiezoVoice PIEZO_VOICES_PASSIVE_ONLY[] = {
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 PiezoPlayer piezoPlayer;
+BatteryMonitor batteryMonitor(
+  BATTERY_ADC_PIN,
+  BATTERY_R1_OHMS,
+  BATTERY_R2_OHMS,
+  BATTERY_ADC_SAMPLES,
+  BATTERY_PERCENT_SMOOTHING_WINDOW,
+  BATTERY_UPDATE_MS,
+  BATTERY_SAMPLE_INTERVAL_MS
+);
 
 DeviceMode mode = MODE_SET_HOUR;
 
@@ -211,16 +198,6 @@ bool lastButtonReading = HIGH;
 bool stableButtonState = HIGH;
 uint32_t lastButtonChangeMs = 0;
 
-int batteryPercent = 0;
-int stableBatteryPercent = 0;
-float batteryAdcVolts = 0.0;
-uint32_t lastBatteryUpdateMs = 0;
-bool batteryDisplayDirty = true;
-bool batterySampling = false;
-uint32_t batteryLastSampleMs = 0;
-uint32_t batterySampleTotalMv = 0;
-int batterySampleCount = 0;
-
 void setup() {
   Serial.begin(115200);
 
@@ -245,9 +222,7 @@ void setup() {
     }
   }
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
-  updateBatteryStatus(true);
+  batteryMonitor.begin();
 
   display.clearDisplay();
   display.display();
@@ -277,100 +252,9 @@ void loop() {
   handleEncoderButton();
   updateTimer();
   updateMusic();
-  updateBatteryStatus(false);
+  batteryMonitor.update();
   updateDisplayIfNeeded();
   handleLightSleep();
-}
-
-int batteryPercentFromVoltage(float volts) {
-  const int pointCount = sizeof(LIPO_CURVE) / sizeof(LIPO_CURVE[0]);
-
-  if (volts >= LIPO_CURVE[0].volts) {
-    return 100;
-  }
-
-  if (volts <= LIPO_CURVE[pointCount - 1].volts) {
-    return 0;
-  }
-
-  for (int i = 0; i < pointCount - 1; i++) {
-    BatteryPoint high = LIPO_CURVE[i];
-    BatteryPoint low = LIPO_CURVE[i + 1];
-
-    if (volts <= high.volts && volts >= low.volts) {
-      float span = high.volts - low.volts;
-      float position = (volts - low.volts) / span;
-      return low.percent + (int)((high.percent - low.percent) * position + 0.5);
-    }
-  }
-
-  return 0;
-}
-
-int smoothBatteryPercent(int percent) {
-  static int readings[BATTERY_PERCENT_SMOOTHING_WINDOW];
-  static int readingIndex = 0;
-  static int readingCount = 0;
-  static int readingTotal = 0;
-
-  if (readingCount < BATTERY_PERCENT_SMOOTHING_WINDOW) {
-    readings[readingIndex] = percent;
-    readingTotal += percent;
-    readingCount++;
-  } else {
-    readingTotal -= readings[readingIndex];
-    readings[readingIndex] = percent;
-    readingTotal += percent;
-  }
-
-  readingIndex = (readingIndex + 1) % BATTERY_PERCENT_SMOOTHING_WINDOW;
-
-  return (readingTotal + readingCount / 2) / readingCount;
-}
-
-void updateBatteryStatus(bool force) {
-  uint32_t now = millis();
-
-  if (!batterySampling) {
-    if (!force && now - lastBatteryUpdateMs < BATTERY_UPDATE_MS) {
-      return;
-    }
-
-    batterySampling = true;
-    batterySampleTotalMv = 0;
-    batterySampleCount = 0;
-    batteryLastSampleMs = now - BATTERY_SAMPLE_INTERVAL_MS;
-  }
-
-  if (now - batteryLastSampleMs < BATTERY_SAMPLE_INTERVAL_MS) {
-    return;
-  }
-
-  batteryLastSampleMs = now;
-  batterySampleTotalMv += analogReadMilliVolts(BATTERY_ADC_PIN);
-  batterySampleCount++;
-
-  if (batterySampleCount < BATTERY_ADC_SAMPLES) {
-    return;
-  }
-
-  batterySampling = false;
-  lastBatteryUpdateMs = now;
-
-  float adcVolts = (batterySampleTotalMv / (float)BATTERY_ADC_SAMPLES) / 1000.0;
-  float batteryVolts = adcVolts * BATTERY_DIVIDER_MULTIPLIER;
-  int newBatteryPercent = batteryPercentFromVoltage(batteryVolts);
-  int newStableBatteryPercent = smoothBatteryPercent(newBatteryPercent);
-
-  if (newBatteryPercent != batteryPercent ||
-      newStableBatteryPercent != stableBatteryPercent ||
-      (adcVolts > batteryAdcVolts + 0.001 || adcVolts < batteryAdcVolts - 0.001)) {
-    batteryDisplayDirty = true;
-  }
-
-  batteryAdcVolts = adcVolts;
-  batteryPercent = newBatteryPercent;
-  stableBatteryPercent = newStableBatteryPercent;
 }
 
 void drawScreenFrame(const char* stateLabel) {
@@ -385,25 +269,27 @@ void drawScreenFrame(const char* stateLabel) {
 void drawBatteryStatus() {
   const int batteryWidth = 18;
   const int batteryHeight = 7;
-  const int batteryX = SCREEN_WIDTH - batteryWidth;
+  const int batteryX = SCREEN_WIDTH - batteryWidth - 3;
   const int batteryY = (HEADER_HEIGHT - batteryHeight) / 2;
   const int terminalWidth = 2;
   const int terminalHeight = 3;
   const int terminalY = batteryY + (batteryHeight - terminalHeight) / 2;
-  const int fillWidth = map(constrain(stableBatteryPercent, 0, 100), 0, 100, 0, batteryWidth - 4);
-  String adcVoltsText = String(batteryAdcVolts, 2) + "V";
-  String percentText = String(batteryPercent) + "%";
-  const int adcVoltsTextWidth = adcVoltsText.length() * 6;
+  const int fillWidth = map(constrain(batteryMonitor.stablePercent(), 0, 100), 0, 100, 0, batteryWidth - 4);
+  String batteryVoltsText = String(batteryMonitor.batteryVolts(), 2) + "V";
+  String percentText = String(batteryMonitor.percent()) + "%";
+  const int batteryVoltsTextWidth = batteryVoltsText.length() * 6;
   const int percentTextWidth = percentText.length() * 6;
   const int textY = 4;
   const int percentTextX = batteryX - terminalWidth - 3 - percentTextWidth;
-  const int adcVoltsTextX = percentTextX - 4 - adcVoltsTextWidth;
+  const int batteryVoltsTextX = percentTextX - 4 - batteryVoltsTextWidth;
 
-  display.setTextSize(1);
-  display.setCursor(adcVoltsTextX, textY);
-  display.print(adcVoltsText);
-  display.setCursor(percentTextX, textY);
-  display.print(percentText);
+  if (SHOW_BATTERY_TEXT) {
+    display.setTextSize(1);
+    display.setCursor(batteryVoltsTextX, textY);
+    display.print(batteryVoltsText);
+    display.setCursor(percentTextX, textY);
+    display.print(percentText);
+  }
 
   display.drawRect(batteryX, batteryY, batteryWidth, batteryHeight, SSD1306_WHITE);
   display.fillRect(batteryX - terminalWidth, terminalY, terminalWidth, terminalHeight, SSD1306_WHITE);
@@ -596,6 +482,7 @@ void handleButtonPress() {
     clockMinute = settingMinute;
     clockSecond = 0;
     lastClockTickMs = millis();
+    pirDisplayUntilMs = millis() + PIR_DISPLAY_HOLD_MS;
     enterReadyMode();
     Serial.print("Clock set to ");
     printClockToSerial();
@@ -664,7 +551,7 @@ void updateTimer() {
 
 void updateDisplayIfNeeded() {
   if (mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE) {
-    if (batteryDisplayDirty || settingFieldVisible() != lastDisplayedSettingBlink) {
+    if (batteryMonitor.displayDirty() || settingFieldVisible() != lastDisplayedSettingBlink) {
       showClockSetting();
     }
     return;
@@ -672,22 +559,22 @@ void updateDisplayIfNeeded() {
 
   if (mode == MODE_MUSIC) {
     if (activePiezoEnabled) {
-      if (batteryDisplayDirty) {
+      if (batteryMonitor.displayDirty()) {
         showMusic();
       }
     } else {
-      showClock(batteryDisplayDirty, "MUSIC");
+      showClock(batteryMonitor.displayDirty(), "MUSIC");
     }
     return;
   }
 
   if (mode == MODE_READY) {
-    showReadyForPirState(batteryDisplayDirty);
+    showReadyForPirState(batteryMonitor.displayDirty());
     return;
   }
 
   if (mode == MODE_TIMER &&
-      (batteryDisplayDirty || remainingSeconds != lastDisplayedSeconds || timerColonVisible() != lastDisplayedTimerColon)) {
+      (batteryMonitor.displayDirty() || remainingSeconds != lastDisplayedSeconds || timerColonVisible() != lastDisplayedTimerColon)) {
     showTimer();
   }
 }
@@ -702,29 +589,13 @@ void showClockSetting() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  drawScreenFrame(mode == MODE_SET_HOUR ? "SET HR" : "SET MIN");
+  drawScreenFrame(mode == MODE_SET_HOUR ? "SET H" : "SET M");
   drawBatteryStatus();
 
-  display.setTextSize(3);
-  display.setCursor(clockTextX(settingHour), 28);
-  if (mode != MODE_SET_HOUR || lastDisplayedSettingBlink) {
-    printHour12(settingHour);
-  } else {
-    printHour12Spaces(settingHour);
-  }
-  display.print(":");
-  if (mode != MODE_SET_MINUTE || lastDisplayedSettingBlink) {
-    printTwoDigits(settingMinute);
-  } else {
-    display.print("  ");
-  }
-
-  display.setTextSize(1);
-  display.setCursor(102, 39);
-  display.print(settingHour < 12 ? "AM" : "PM");
+  drawClockTime(settingHour, settingMinute, true, mode != MODE_SET_HOUR || lastDisplayedSettingBlink, mode != MODE_SET_MINUTE || lastDisplayedSettingBlink);
 
   display.display();
-  batteryDisplayDirty = false;
+  batteryMonitor.clearDisplayDirty();
 }
 
 void showTimer() {
@@ -748,7 +619,7 @@ void showTimer() {
   printTwoDigits(secs);
 
   display.display();
-  batteryDisplayDirty = false;
+  batteryMonitor.clearDisplayDirty();
 }
 
 void showMusic() {
@@ -768,7 +639,7 @@ void showMusic() {
   printTwoDigits(remainingSeconds % 60);
 
   display.display();
-  batteryDisplayDirty = false;
+  batteryMonitor.clearDisplayDirty();
 }
 
 void showClock(bool force, const char* label) {
@@ -794,18 +665,10 @@ void showClock(bool force, const char* label) {
   drawScreenFrame(label);
   drawBatteryStatus();
 
-  display.setTextSize(3);
-  display.setCursor(clockTextX(clockHour), 28);
-  printHour12(clockHour);
-  display.print(colonVisible ? ":" : " ");
-  printTwoDigits(clockMinute);
-
-  display.setTextSize(1);
-  display.setCursor(102, 39);
-  display.print(clockHour < 12 ? "AM" : "PM");
+  drawClockTime(clockHour, clockMinute, colonVisible, true, true);
 
   display.display();
-  batteryDisplayDirty = false;
+  batteryMonitor.clearDisplayDirty();
 }
 
 bool timerColonVisible() {
@@ -837,6 +700,39 @@ void printTwoDigits(int value) {
   display.print(value);
 }
 
+void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute) {
+  uint8_t hour12 = hour12Value(hour24);
+  int hourDigits = hour12 < 10 ? 1 : 2;
+  int timeChars = hourDigits + 1 + 2;
+  int timeWidth = timeChars * 6 * CLOCK_TEXT_SIZE;
+  int amPmWidth = 2 * 6;
+  int blockWidth = timeWidth + CLOCK_AM_PM_GAP + amPmWidth;
+  int timeX = (SCREEN_WIDTH - blockWidth) / 2;
+  int timeY = CONTENT_TOP + (CONTENT_HEIGHT - CLOCK_TEXT_HEIGHT) / 2;
+  int amPmX = timeX + timeWidth + CLOCK_AM_PM_GAP;
+  int amPmY = timeY + CLOCK_AM_PM_Y_OFFSET;
+
+  display.setTextSize(CLOCK_TEXT_SIZE);
+  display.setCursor(timeX, timeY);
+  if (showHour) {
+    display.print(hour12);
+  } else {
+    for (int i = 0; i < hourDigits; i++) {
+      display.print(" ");
+    }
+  }
+  display.print(colonVisible ? ":" : " ");
+  if (showMinute) {
+    printTwoDigits(minute);
+  } else {
+    display.print("  ");
+  }
+
+  display.setTextSize(1);
+  display.setCursor(amPmX, amPmY);
+  display.print(hour24 < 12 ? "AM" : "PM");
+}
+
 void printHour12(uint8_t hour24) {
   uint8_t hour12 = hour24 % 12;
   if (hour12 == 0) {
@@ -846,17 +742,9 @@ void printHour12(uint8_t hour24) {
   display.print(hour12);
 }
 
-void printHour12Spaces(uint8_t hour24) {
-  display.print(hour12Value(hour24) < 10 ? " " : "  ");
-}
-
 uint8_t hour12Value(uint8_t hour24) {
   uint8_t hour12 = hour24 % 12;
   return hour12 == 0 ? 12 : hour12;
-}
-
-int clockTextX(uint8_t hour24) {
-  return hour12Value(hour24) < 10 ? 26 : 17;
 }
 
 void enterReadyMode() {
@@ -879,14 +767,14 @@ void showReadyForPirState(bool force) {
 
 void blankDisplay() {
   if (displayBlank) {
-    batteryDisplayDirty = false;
+    batteryMonitor.clearDisplayDirty();
     return;
   }
 
   display.clearDisplay();
   display.display();
   displayBlank = true;
-  batteryDisplayDirty = false;
+  batteryMonitor.clearDisplayDirty();
   lastDisplayedSeconds = -1;
   lastDisplayedClockHour = -1;
   lastDisplayedClockMinute = -1;
@@ -931,7 +819,7 @@ void enterLightSleep() {
     pirDisplayUntilMs = millis() + PIR_DISPLAY_HOLD_MS;
   }
 
-  batteryDisplayDirty = true;
+  batteryMonitor.update(true);
   showReadyForPirState(true);
 }
 
