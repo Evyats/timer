@@ -121,6 +121,7 @@ const int MAX_SECONDS = 99 * 60 + 59;
 const int BATTERY_ADC_SAMPLES = 32;
 const int BATTERY_PERCENT_SMOOTHING_WINDOW = 8;
 const uint32_t BATTERY_UPDATE_MS = 5000;
+const uint32_t BATTERY_SAMPLE_INTERVAL_MS = 2;
 const float BATTERY_R1_OHMS = 100000.0;
 const float BATTERY_R2_OHMS = 100000.0;
 const float BATTERY_DIVIDER_MULTIPLIER = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
@@ -211,6 +212,10 @@ int stableBatteryPercent = 0;
 float batteryAdcVolts = 0.0;
 uint32_t lastBatteryUpdateMs = 0;
 bool batteryDisplayDirty = true;
+bool batterySampling = false;
+uint32_t batteryLastSampleMs = 0;
+uint32_t batterySampleTotalMv = 0;
+int batterySampleCount = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -272,17 +277,6 @@ void loop() {
   updateDisplayIfNeeded();
 }
 
-float readBatteryAdcMilliVolts() {
-  uint32_t total = 0;
-
-  for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
-    total += analogReadMilliVolts(BATTERY_ADC_PIN);
-    delay(2);
-  }
-
-  return total / (float)BATTERY_ADC_SAMPLES;
-}
-
 int batteryPercentFromVoltage(float volts) {
   const int pointCount = sizeof(LIPO_CURVE) / sizeof(LIPO_CURVE[0]);
 
@@ -332,13 +326,33 @@ int smoothBatteryPercent(int percent) {
 void updateBatteryStatus(bool force) {
   uint32_t now = millis();
 
-  if (!force && now - lastBatteryUpdateMs < BATTERY_UPDATE_MS) {
+  if (!batterySampling) {
+    if (!force && now - lastBatteryUpdateMs < BATTERY_UPDATE_MS) {
+      return;
+    }
+
+    batterySampling = true;
+    batterySampleTotalMv = 0;
+    batterySampleCount = 0;
+    batteryLastSampleMs = now - BATTERY_SAMPLE_INTERVAL_MS;
+  }
+
+  if (now - batteryLastSampleMs < BATTERY_SAMPLE_INTERVAL_MS) {
     return;
   }
 
+  batteryLastSampleMs = now;
+  batterySampleTotalMv += analogReadMilliVolts(BATTERY_ADC_PIN);
+  batterySampleCount++;
+
+  if (batterySampleCount < BATTERY_ADC_SAMPLES) {
+    return;
+  }
+
+  batterySampling = false;
   lastBatteryUpdateMs = now;
 
-  float adcVolts = readBatteryAdcMilliVolts() / 1000.0;
+  float adcVolts = (batterySampleTotalMv / (float)BATTERY_ADC_SAMPLES) / 1000.0;
   float batteryVolts = adcVolts * BATTERY_DIVIDER_MULTIPLIER;
   int newBatteryPercent = batteryPercentFromVoltage(batteryVolts);
   int newStableBatteryPercent = smoothBatteryPercent(newBatteryPercent);
