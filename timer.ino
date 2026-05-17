@@ -77,9 +77,13 @@ const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
 const int CLOCK_AM_PM_GAP = 6;
 const int CLOCK_AM_PM_Y_OFFSET = 8;
 const int OLED_ADDRESS = 0x3C;
+const bool SHOW_SECTION_BORDERS = true;
+const bool SHOW_STATE_TEXT = false;
 const bool SHOW_BATTERY_TEXT = true;
+const bool CENTER_BATTERY_ICON = true;
+const bool USE_12_HOUR_CLOCK = false;
 
-// Regular ESP32 pin assignment:
+//// Regular ESP32 pin assignment:
 // const int SDA_PIN = 21;
 // const int SCL_PIN = 22;
 // const int BATTERY_ADC_PIN = 34;
@@ -93,7 +97,7 @@ const bool SHOW_BATTERY_TEXT = true;
 // const uint8_t ACTIVE_PIEZO_PIN = 27;
 // const uint8_t ACTIVE_PIEZO_LED_PIN = 14;
 
-// ESP32-C3 Super Mini pin assignment:
+//// ESP32-C3 Super Mini pin assignment:
 // GPIO2, GPIO8, and GPIO9 are C3 strapping pins. This mapping keeps sensors,
 // encoder switches, and OLED I2C off those pins. GPIO2/GPIO8 are output-only here.
 const int SDA_PIN = 4;
@@ -258,18 +262,22 @@ void loop() {
 }
 
 void drawScreenFrame(const char* stateLabel) {
-  display.drawRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
-  display.drawRect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT, SSD1306_WHITE);
+  if (SHOW_SECTION_BORDERS) {
+    display.drawRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
+    display.drawRect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT, SSD1306_WHITE);
+  }
 
-  display.setTextSize(1);
-  display.setCursor(2, 4);
-  display.print(stateLabel);
+  if (SHOW_STATE_TEXT) {
+    display.setTextSize(1);
+    display.setCursor(2, 4);
+    display.print(stateLabel);
+  }
 }
 
 void drawBatteryStatus() {
   const int batteryWidth = 18;
   const int batteryHeight = 7;
-  const int batteryX = SCREEN_WIDTH - batteryWidth - 3;
+  const int batteryX = CENTER_BATTERY_ICON ? (SCREEN_WIDTH - batteryWidth) / 2 : SCREEN_WIDTH - batteryWidth - 3;
   const int batteryY = (HEADER_HEIGHT - batteryHeight) / 2;
   const int terminalWidth = 2;
   const int terminalHeight = 3;
@@ -701,12 +709,12 @@ void printTwoDigits(int value) {
 }
 
 void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute) {
-  uint8_t hour12 = hour12Value(hour24);
-  int hourDigits = hour12 < 10 ? 1 : 2;
+  uint8_t displayHour = USE_12_HOUR_CLOCK ? hour12Value(hour24) : hour24;
+  int hourDigits = USE_12_HOUR_CLOCK ? (displayHour < 10 ? 1 : 2) : 2;
   int timeChars = hourDigits + 1 + 2;
   int timeWidth = timeChars * 6 * CLOCK_TEXT_SIZE;
-  int amPmWidth = 2 * 6;
-  int blockWidth = timeWidth + CLOCK_AM_PM_GAP + amPmWidth;
+  int amPmWidth = USE_12_HOUR_CLOCK ? 2 * 6 : 0;
+  int blockWidth = timeWidth + (USE_12_HOUR_CLOCK ? CLOCK_AM_PM_GAP + amPmWidth : 0);
   int timeX = (SCREEN_WIDTH - blockWidth) / 2;
   int timeY = CONTENT_TOP + (CONTENT_HEIGHT - CLOCK_TEXT_HEIGHT) / 2;
   int amPmX = timeX + timeWidth + CLOCK_AM_PM_GAP;
@@ -715,7 +723,10 @@ void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showH
   display.setTextSize(CLOCK_TEXT_SIZE);
   display.setCursor(timeX, timeY);
   if (showHour) {
-    display.print(hour12);
+    if (!USE_12_HOUR_CLOCK && displayHour < 10) {
+      display.print("0");
+    }
+    display.print(displayHour);
   } else {
     for (int i = 0; i < hourDigits; i++) {
       display.print(" ");
@@ -728,9 +739,11 @@ void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showH
     display.print("  ");
   }
 
-  display.setTextSize(1);
-  display.setCursor(amPmX, amPmY);
-  display.print(hour24 < 12 ? "AM" : "PM");
+  if (USE_12_HOUR_CLOCK) {
+    display.setTextSize(1);
+    display.setCursor(amPmX, amPmY);
+    display.print(hour24 < 12 ? "AM" : "PM");
+  }
 }
 
 void printHour12(uint8_t hour24) {
