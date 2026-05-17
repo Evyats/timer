@@ -1,5 +1,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <driver/gpio.h>
+#include <esp_sleep.h>
 #include <PiezoMidiPlayer.h>
 #include <Wire.h>
 
@@ -106,6 +108,8 @@ const int PIR_MOTION_STATE = HIGH;
 const int SOUND_DETECTED_STATE = LOW;
 const unsigned long PIR_WARMUP_MS = 3000;
 const uint32_t PIR_DISPLAY_HOLD_MS = 2000;
+const uint32_t LIGHT_SLEEP_AFTER_MS = 10000;
+const bool ENABLE_LIGHT_SLEEP = true;
 const uint8_t SOUND_TRIGGER_MIN_PULSES = 3;
 const uint32_t SOUND_TRIGGER_WINDOW_MS = 250;
 const uint32_t SOUND_TRIGGER_COOLDOWN_MS = 600;
@@ -275,6 +279,7 @@ void loop() {
   updateMusic();
   updateBatteryStatus(false);
   updateDisplayIfNeeded();
+  handleLightSleep();
 }
 
 int batteryPercentFromVoltage(float volts) {
@@ -885,6 +890,46 @@ void blankDisplay() {
   lastDisplayedSeconds = -1;
   lastDisplayedClockHour = -1;
   lastDisplayedClockMinute = -1;
+}
+
+void handleLightSleep() {
+  if (!ENABLE_LIGHT_SLEEP || mode != MODE_READY || !displayBlank || alarmPlaying || piezoPlayer.isPlaying()) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if (now - pirDisplayUntilMs < LIGHT_SLEEP_AFTER_MS) {
+    return;
+  }
+
+  if (digitalRead(PIR_PIN) == PIR_MOTION_STATE) {
+    pirDisplayUntilMs = now + PIR_DISPLAY_HOLD_MS;
+    showReadyForPirState(true);
+    return;
+  }
+
+  enterLightSleep();
+}
+
+void enterLightSleep() {
+  Serial.println("Entering light sleep. PIR motion wakes the timer.");
+
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+  gpio_wakeup_enable((gpio_num_t)PIR_PIN, GPIO_INTR_HIGH_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  esp_light_sleep_start();
+  gpio_wakeup_disable((gpio_num_t)PIR_PIN);
+
+  Serial.println("Woke from light sleep.");
+
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  lastPirState = digitalRead(PIR_PIN);
+  if (lastPirState == PIR_MOTION_STATE) {
+    pirDisplayUntilMs = millis() + PIR_DISPLAY_HOLD_MS;
+  }
+
+  batteryDisplayDirty = true;
+  showReadyForPirState(true);
 }
 
 void startMusic(bool includeActivePiezo) {
