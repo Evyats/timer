@@ -98,8 +98,8 @@ const bool USE_12_HOUR_CLOCK = false;
 // const uint8_t ACTIVE_PIEZO_LED_PIN = 14;
 
 //// ESP32-C3 Super Mini pin assignment:
-// GPIO2, GPIO8, and GPIO9 are C3 strapping pins. This mapping keeps sensors,
-// encoder switches, and OLED I2C off those pins. GPIO2/GPIO8 are output-only here.
+// GPIO2, GPIO8, and GPIO9 are C3 strapping pins. GPIO8 is currently being tested
+// for encoder S1.
 const int SDA_PIN = 4;
 const int SCL_PIN = 5;
 const int BATTERY_ADC_PIN = 0;  // ADC1 pin.
@@ -110,16 +110,18 @@ const int PIR_PIN = 20;
 const int SOUND_PIN = 21;
 const uint8_t MAIN_PIEZO_PIN = 7;
 const uint8_t HARMONY_PIEZO_PIN = 8;
-const uint8_t ACTIVE_PIEZO_PIN = 2;
+const uint8_t ACTIVE_PIEZO_PIN = 3;
 const uint8_t ACTIVE_PIEZO_LED_PIN = ACTIVE_PIEZO_PIN;
 
 const bool REVERSE_ENCODER_DIRECTION = true;
 const uint32_t BUTTON_DEBOUNCE_MS = 35;
+const bool LOG_ENCODER_RAW_STATES = true;
 
 const int PIR_MOTION_STATE = HIGH;
 const int SOUND_DETECTED_STATE = LOW;
 const unsigned long PIR_WARMUP_MS = 3000;
 const uint32_t PIR_DISPLAY_HOLD_MS = 2000;
+const uint32_t BUTTON_DISPLAY_HOLD_MS = PIR_DISPLAY_HOLD_MS;
 const uint32_t LIGHT_SLEEP_AFTER_MS = 120000;
 const bool ENABLE_LIGHT_SLEEP = true;
 const uint8_t SOUND_TRIGGER_MIN_PULSES = 3;
@@ -399,12 +401,15 @@ int readEncoderStep() {
   if (!initialized) {
     lastState = state;
     initialized = true;
+    printEncoderRawState(s1, s2, state);
     return 0;
   }
 
   if (state == lastState) {
     return 0;
   }
+
+  printEncoderRawState(s1, s2, state);
 
   int transition = (lastState << 2) | state;
   lastState = state;
@@ -444,6 +449,20 @@ int readEncoderStep() {
   return 0;
 }
 
+void printEncoderRawState(int s1, int s2, int state) {
+  if (!LOG_ENCODER_RAW_STATES) {
+    return;
+  }
+
+  Serial.print(millis());
+  Serial.print(" ms encoder raw S1=");
+  Serial.print(s1);
+  Serial.print(" S2=");
+  Serial.print(s2);
+  Serial.print(" state=");
+  Serial.println(state, BIN);
+}
+
 int wrapValue(int value, int minimumValue, int maximumValue) {
   if (value < minimumValue) {
     return maximumValue;
@@ -481,6 +500,8 @@ void handleEncoderButton() {
 }
 
 void handleButtonPress() {
+  keepDisplayOnAfterButtonPress();
+
   if (mode == MODE_SET_HOUR) {
     mode = MODE_SET_MINUTE;
     restartSettingBlink();
@@ -493,7 +514,6 @@ void handleButtonPress() {
     clockMinute = settingMinute;
     clockSecond = 0;
     lastClockTickMs = millis();
-    pirDisplayUntilMs = millis() + PIR_DISPLAY_HOLD_MS;
     enterReadyMode();
     Serial.print("Clock set to ");
     printClockToSerial();
@@ -516,6 +536,10 @@ void handleButtonPress() {
   if (mode == MODE_READY) {
     startMusic(false);
   }
+}
+
+void keepDisplayOnAfterButtonPress() {
+  pirDisplayUntilMs = millis() + BUTTON_DISPLAY_HOLD_MS;
 }
 
 void updateClock() {
