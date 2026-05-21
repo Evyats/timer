@@ -6,7 +6,7 @@
 
 #include <PiezoMidiPlayer.h>
 
-const PiezoEvent PIEZO_SONG_EVENTS[] PROGMEM = {
+const PiezoEvent BAT_ELAY_SONG_EVENTS[] PROGMEM = {
   { 0, 0, 1 },
   { 0, 2, 165 },
   { 188, 0, 0 },
@@ -124,8 +124,8 @@ const PiezoEvent PIEZO_SONG_EVENTS[] PROGMEM = {
 };
 
 const PiezoSong BAT_ELAY_SONG = {
-  PIEZO_SONG_EVENTS,
-  sizeof(PIEZO_SONG_EVENTS) / sizeof(PIEZO_SONG_EVENTS[0]),
+  BAT_ELAY_SONG_EVENTS,
+  sizeof(BAT_ELAY_SONG_EVENTS) / sizeof(BAT_ELAY_SONG_EVENTS[0]),
   3,
   23000
 };
