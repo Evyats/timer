@@ -100,17 +100,32 @@ const bool USE_12_HOUR_CLOCK = false;
 //// ESP32-C3 Super Mini pin assignment:
 // GPIO2, GPIO8, and GPIO9 are C3 strapping pins. GPIO8 is currently being tested
 // for encoder S1.
-const int SDA_PIN = 4;
-const int SCL_PIN = 5;
-const int BATTERY_ADC_PIN = 0;  // ADC1 pin.
-const int ENCODER_S1_PIN = 1;
-const int ENCODER_S2_PIN = 10;
-const int ENCODER_BUTTON_PIN = 6;
-const int PIR_PIN = 20;
-const int SOUND_PIN = 21;
-const uint8_t MAIN_PIEZO_PIN = 7;
-const uint8_t HARMONY_PIEZO_PIN = 8;
-const uint8_t ACTIVE_PIEZO_PIN = 3;
+// const int SDA_PIN = 4;
+// const int SCL_PIN = 5;
+// const int BATTERY_ADC_PIN = 0;  // ADC1 pin.
+// const int ENCODER_S1_PIN = 1;
+// const int ENCODER_S2_PIN = 10;
+// const int ENCODER_BUTTON_PIN = 6;
+// const int PIR_PIN = 20;
+// const int SOUND_PIN = 21;
+// const uint8_t MAIN_PIEZO_PIN = 7;
+// const uint8_t HARMONY_PIEZO_PIN = 8;
+// const uint8_t ACTIVE_PIEZO_PIN = 3;
+// const uint8_t ACTIVE_PIEZO_LED_PIN = ACTIVE_PIEZO_PIN;
+
+//// Seeed Studio XIAO ESP32C3 pin assignment:
+// GPIO2, GPIO8, and GPIO9 are C3 strapping pins. D9 is also connected to BOOT.
+const int SDA_PIN = 6;              // D4
+const int SCL_PIN = 7;              // D5
+const int BATTERY_ADC_PIN = 3;      // D1 / ADC1_CH3
+const int ENCODER_S1_PIN = 20;      // D7
+const int ENCODER_S2_PIN = 10;      // D10
+const int ENCODER_BUTTON_PIN = 9;   // D9 / BOOT
+const int PIR_PIN = 4;              // D2 / wake-capable
+const int SOUND_PIN = 21;           // D6
+const uint8_t MAIN_PIEZO_PIN = 2;   // D0
+const uint8_t HARMONY_PIEZO_PIN = 8;  // D8
+const uint8_t ACTIVE_PIEZO_PIN = 5;   // D3
 const uint8_t ACTIVE_PIEZO_LED_PIN = ACTIVE_PIEZO_PIN;
 
 const bool REVERSE_ENCODER_DIRECTION = true;
@@ -133,8 +148,10 @@ const uint8_t ACTIVE_PIEZO_VOICE = 0;
 const int PIEZO_SELF_TEST_TONE_HZ = 880;
 const int PIEZO_SELF_TEST_MS = 300;
 const uint16_t PIEZO_SLIDE_UPDATE_INTERVAL_MS = 10;
+const uint32_t TIMER_START_DELAY_MS = 2000;
+const uint32_t TIMER_COLON_BLINK_DELAY_MS = 1000;
 
-const int STEP_SECONDS = 3;
+const int STEP_SECONDS = 60;
 const int MAX_SECONDS = 99 * 60 + 59;
 const int BATTERY_ADC_SAMPLES = 32;
 const int BATTERY_PERCENT_SMOOTHING_WINDOW = 8;
@@ -171,7 +188,7 @@ const PiezoSong* currentSong = nullptr;
 DeviceMode mode = MODE_SET_HOUR;
 
 int remainingSeconds = 0;
-unsigned long lastTimerTickMs = 0;
+uint32_t nextTimerTickMs = 0;
 uint32_t timerBlinkStartedAtMs = 0;
 int lastDisplayedSeconds = -1;
 bool lastDisplayedTimerColon = false;
@@ -376,9 +393,11 @@ void handleEncoder() {
   }
 
   if (remainingSeconds > 0) {
+    uint32_t now = millis();
     mode = MODE_TIMER;
-    lastTimerTickMs = millis();
-    restartTimerBlink();
+    nextTimerTickMs = now + TIMER_START_DELAY_MS;
+    timerBlinkStartedAtMs = now + TIMER_COLON_BLINK_DELAY_MS;
+    lastDisplayedTimerColon = true;
     showTimer();
   } else {
     enterReadyMode();
@@ -455,10 +474,18 @@ void printEncoderRawState(int s1, int s2, int state) {
   }
 
   Serial.print(millis());
-  Serial.print(" ms encoder raw S1=");
-  Serial.print(s1);
-  Serial.print(" S2=");
-  Serial.print(s2);
+  Serial.print(" ms encoder rotated: S1 GPIO");
+  Serial.print(ENCODER_S1_PIN);
+  Serial.print("=");
+  Serial.print(s1 == HIGH ? "HIGH" : "LOW");
+  Serial.print(" S2 GPIO");
+  Serial.print(ENCODER_S2_PIN);
+  Serial.print("=");
+  Serial.print(s2 == HIGH ? "HIGH" : "LOW");
+  Serial.print(" BUTTON GPIO");
+  Serial.print(ENCODER_BUTTON_PIN);
+  Serial.print("=");
+  Serial.print(digitalRead(ENCODER_BUTTON_PIN) == HIGH ? "HIGH" : "LOW");
   Serial.print(" state=");
   Serial.println(state, BIN);
 }
@@ -500,6 +527,22 @@ void handleEncoderButton() {
 }
 
 void handleButtonPress() {
+  if (LOG_ENCODER_RAW_STATES) {
+    Serial.print(millis());
+    Serial.print(" ms encoder button pressed: S1 GPIO");
+    Serial.print(ENCODER_S1_PIN);
+    Serial.print("=");
+    Serial.print(digitalRead(ENCODER_S1_PIN) == HIGH ? "HIGH" : "LOW");
+    Serial.print(" S2 GPIO");
+    Serial.print(ENCODER_S2_PIN);
+    Serial.print("=");
+    Serial.print(digitalRead(ENCODER_S2_PIN) == HIGH ? "HIGH" : "LOW");
+    Serial.print(" BUTTON GPIO");
+    Serial.print(ENCODER_BUTTON_PIN);
+    Serial.print("=");
+    Serial.println(digitalRead(ENCODER_BUTTON_PIN) == HIGH ? "HIGH" : "LOW");
+  }
+
   keepDisplayOnAfterButtonPress();
 
   if (mode == MODE_SET_HOUR) {
@@ -573,8 +616,8 @@ void updateTimer() {
 
   uint32_t now = millis();
 
-  while (now - lastTimerTickMs >= 1000 && remainingSeconds > 0) {
-    lastTimerTickMs += 1000;
+  while ((int32_t)(now - nextTimerTickMs) >= 0 && remainingSeconds > 0) {
+    nextTimerTickMs += 1000;
     remainingSeconds--;
     restartTimerBlink();
   }
@@ -707,6 +750,10 @@ void showClock(bool force, const char* label) {
 }
 
 bool timerColonVisible() {
+  if ((int32_t)(millis() - timerBlinkStartedAtMs) < 0) {
+    return true;
+  }
+
   return ((millis() - timerBlinkStartedAtMs) / 500) % 2 == 0;
 }
 
