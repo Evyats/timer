@@ -3,10 +3,13 @@
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <PiezoMidiPlayer.h>
+#include <WiFi.h>
 #include <Wire.h>
+#include <time.h>
 
 #include "BatteryMonitor.h"
 #include "songs/Songs.h"
+#include "wifi_secrets.h"
 
 /*
   OLED timer with rotary encoder, two passive piezos, active piezo, LED,
@@ -65,6 +68,14 @@ enum DeviceMode {
   MODE_READY,
   MODE_TIMER,
   MODE_MUSIC
+};
+
+enum TimeSyncState {
+  TIME_SYNC_IDLE,
+  TIME_SYNC_CONNECTING_WIFI,
+  TIME_SYNC_WAITING_FOR_TIME,
+  TIME_SYNC_RETRY_WAIT,
+  TIME_SYNC_COMPLETE
 };
 
 const int SCREEN_WIDTH = 128;
@@ -138,6 +149,7 @@ const unsigned long PIR_WARMUP_MS = 3000;
 const uint32_t PIR_DISPLAY_HOLD_MS = 2000;
 const uint32_t BUTTON_DISPLAY_HOLD_MS = PIR_DISPLAY_HOLD_MS;
 const uint32_t LIGHT_SLEEP_AFTER_MS = 120000;
+const uint64_t LIGHT_SLEEP_TO_DEEP_SLEEP_US = 10ULL * 60ULL * 1000000ULL;
 const bool ENABLE_LIGHT_SLEEP = true;
 const uint8_t SOUND_TRIGGER_MIN_PULSES = 3;
 const uint32_t SOUND_TRIGGER_WINDOW_MS = 250;
@@ -150,6 +162,13 @@ const int PIEZO_SELF_TEST_MS = 300;
 const uint16_t PIEZO_SLIDE_UPDATE_INTERVAL_MS = 10;
 const uint32_t TIMER_START_DELAY_MS = 2000;
 const uint32_t TIMER_COLON_BLINK_DELAY_MS = 1000;
+const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+const uint32_t TIME_FETCH_TIMEOUT_MS = 15000;
+const uint32_t TIME_SYNC_RETRY_MS = 60000;
+const char* const ISRAEL_TZ = "IST-2IDT,M3.4.4/26,M10.5.0";
+const char* const NTP_SERVER_1 = "pool.ntp.org";
+const char* const NTP_SERVER_2 = "time.google.com";
+const char* const NTP_SERVER_3 = "time.cloudflare.com";
 
 const int STEP_SECONDS = 60;
 const int MAX_SECONDS = 99 * 60 + 59;
@@ -186,6 +205,7 @@ BatteryMonitor batteryMonitor(
 const PiezoSong* currentSong = nullptr;
 
 DeviceMode mode = MODE_SET_HOUR;
+TimeSyncState timeSyncState = TIME_SYNC_IDLE;
 
 int remainingSeconds = 0;
 uint32_t nextTimerTickMs = 0;
@@ -222,6 +242,10 @@ uint32_t lastSoundActivationMs = 0;
 bool lastButtonReading = HIGH;
 bool stableButtonState = HIGH;
 uint32_t lastButtonChangeMs = 0;
+bool clockHasValidTime = false;
+uint32_t timeSyncStartedAtMs = 0;
+uint32_t nextTimeSyncAttemptMs = 0;
+wl_status_t lastLoggedWifiStatus = WL_IDLE_STATUS;
 
 void setup() {
   Serial.begin(115200);
@@ -253,8 +277,13 @@ void setup() {
   display.clearDisplay();
   display.display();
 
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+
   Serial.println();
   Serial.println("OLED rotary timer");
+  Serial.print("Wakeup cause: ");
+  Serial.println((int)esp_sleep_get_wakeup_cause());
   Serial.println("Warming up PIR sensor...");
   delay(PIR_WARMUP_MS);
   lastPirState = digitalRead(PIR_PIN);
@@ -264,14 +293,17 @@ void setup() {
   lastSoundState = digitalRead(SOUND_PIN);
   lastClockTickMs = millis();
   settingBlinkStartedAtMs = millis();
-  showClockSetting();
+  mode = MODE_READY;
+  beginTimeSync();
+  showReadyForPirState(true);
 
-  Serial.println("Set clock: choose hour, click, choose minute, click.");
+  Serial.println("Starting background Wi-Fi time sync.");
   Serial.println("Send 't' in Serial Monitor to test the three piezo outputs.");
 }
 
 void loop() {
   handleSerialCommands();
+  updateTimeSync();
   updateClock();
   updateSensors();
   handleEncoder();
@@ -343,6 +375,116 @@ void writeActivePiezoLed(bool on) {
   }
 
   digitalWrite(ACTIVE_PIEZO_LED_PIN, on ? HIGH : LOW);
+}
+
+void disconnectAndDisableWifi() {
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+}
+
+void beginTimeSync() {
+  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI || timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
+    return;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  timeSyncState = TIME_SYNC_CONNECTING_WIFI;
+  timeSyncStartedAtMs = millis();
+  lastLoggedWifiStatus = WL_IDLE_STATUS;
+  Serial.print("Connecting to Wi-Fi SSID ");
+  Serial.println(WIFI_SSID);
+}
+
+void finishTimeSync(bool success) {
+  disconnectAndDisableWifi();
+
+  if (success) {
+    timeSyncState = TIME_SYNC_COMPLETE;
+    Serial.println("Wi-Fi disconnected. Time sync complete.");
+  } else {
+    timeSyncState = TIME_SYNC_RETRY_WAIT;
+    nextTimeSyncAttemptMs = millis() + TIME_SYNC_RETRY_MS;
+    Serial.println("Wi-Fi disconnected. Time sync failed; retry scheduled.");
+  }
+}
+
+void applySyncedClock() {
+  time_t nowSeconds = time(nullptr);
+  struct tm timeInfo;
+  localtime_r(&nowSeconds, &timeInfo);
+
+  clockHasValidTime = true;
+  clockHour = timeInfo.tm_hour;
+  clockMinute = timeInfo.tm_min;
+  clockSecond = timeInfo.tm_sec;
+  lastClockTickMs = millis();
+  lastDisplayedClockHour = -1;
+  lastDisplayedClockMinute = -1;
+  lastDisplayedClockColon = false;
+
+  Serial.print("Clock synced from NTP: ");
+  printClockToSerial();
+
+  if (mode == MODE_READY) {
+    showReadyForPirState(true);
+  }
+}
+
+void updateTimeSync() {
+  if (timeSyncState == TIME_SYNC_RETRY_WAIT) {
+    if ((int32_t)(millis() - nextTimeSyncAttemptMs) >= 0) {
+      beginTimeSync();
+    }
+    return;
+  }
+
+  if (timeSyncState == TIME_SYNC_IDLE || timeSyncState == TIME_SYNC_COMPLETE) {
+    return;
+  }
+
+  uint32_t now = millis();
+
+  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI) {
+    wl_status_t wifiStatus = WiFi.status();
+    if (wifiStatus != lastLoggedWifiStatus) {
+      lastLoggedWifiStatus = wifiStatus;
+      Serial.print("Wi-Fi status changed: ");
+      Serial.println((int)wifiStatus);
+    }
+
+    if (wifiStatus == WL_CONNECTED) {
+      Serial.print("Wi-Fi connected. IP: ");
+      Serial.println(WiFi.localIP());
+      configTzTime(ISRAEL_TZ, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
+      timeSyncState = TIME_SYNC_WAITING_FOR_TIME;
+      timeSyncStartedAtMs = now;
+      Serial.println("Waiting for NTP time...");
+      return;
+    }
+
+    if (now - timeSyncStartedAtMs >= WIFI_CONNECT_TIMEOUT_MS) {
+      Serial.println("Wi-Fi connect timed out.");
+      finishTimeSync(false);
+    }
+    return;
+  }
+
+  if (timeSyncState != TIME_SYNC_WAITING_FOR_TIME) {
+    return;
+  }
+
+  time_t nowSeconds = time(nullptr);
+  if (nowSeconds > 1700000000) {
+    applySyncedClock();
+    finishTimeSync(true);
+    return;
+  }
+
+  if (now - timeSyncStartedAtMs >= TIME_FETCH_TIMEOUT_MS) {
+    Serial.println("NTP time fetch timed out.");
+    finishTimeSync(false);
+  }
 }
 
 void handleSerialCommands() {
@@ -591,22 +733,26 @@ void updateClock() {
     return;
   }
 
-  uint32_t now = millis();
-
-  while (now - lastClockTickMs >= 1000) {
-    lastClockTickMs += 1000;
-    clockSecond++;
-
-    if (clockSecond >= 60) {
-      clockSecond = 0;
-      clockMinute++;
-    }
-
-    if (clockMinute >= 60) {
-      clockMinute = 0;
-      clockHour = (clockHour + 1) % 24;
-    }
+  if (!clockHasValidTime) {
+    lastClockTickMs = millis();
+    return;
   }
+
+  uint32_t now = millis();
+  uint32_t elapsedMs = now - lastClockTickMs;
+  uint32_t elapsedSeconds = elapsedMs / 1000;
+  if (elapsedSeconds == 0) {
+    return;
+  }
+
+  lastClockTickMs += elapsedSeconds * 1000;
+
+  uint32_t totalSeconds = clockSecond + elapsedSeconds;
+  clockSecond = totalSeconds % 60;
+
+  uint32_t totalMinutes = clockMinute + (totalSeconds / 60);
+  clockMinute = totalMinutes % 60;
+  clockHour = (clockHour + (totalMinutes / 60)) % 24;
 }
 
 void updateTimer() {
@@ -657,6 +803,22 @@ void updateDisplayIfNeeded() {
   }
 }
 
+const char* syncStatusText() {
+  switch (timeSyncState) {
+    case TIME_SYNC_CONNECTING_WIFI:
+      return "WIFI...";
+    case TIME_SYNC_WAITING_FOR_TIME:
+      return "NTP...";
+    case TIME_SYNC_RETRY_WAIT:
+      return "RETRY";
+    case TIME_SYNC_COMPLETE:
+      return "DONE";
+    case TIME_SYNC_IDLE:
+    default:
+      return "IDLE";
+  }
+}
+
 void showClockSetting() {
   displayBlank = false;
   lastDisplayedSeconds = -1;
@@ -671,6 +833,46 @@ void showClockSetting() {
   drawBatteryStatus();
 
   drawClockTime(settingHour, settingMinute, true, mode != MODE_SET_HOUR || lastDisplayedSettingBlink, mode != MODE_SET_MINUTE || lastDisplayedSettingBlink);
+
+  display.display();
+  batteryMonitor.clearDisplayDirty();
+}
+
+void showSyncStatus() {
+  displayBlank = false;
+  lastDisplayedSeconds = -1;
+  lastDisplayedClockHour = -1;
+  lastDisplayedClockMinute = -1;
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  drawScreenFrame("SYNC");
+  drawBatteryStatus();
+
+  display.setTextSize(2);
+  const char* status = syncStatusText();
+  int statusWidth = strlen(status) * 12;
+  int statusX = (SCREEN_WIDTH - statusWidth) / 2;
+  int statusY = CONTENT_TOP + 8;
+  display.setCursor(statusX, statusY);
+  display.print(status);
+
+  display.setTextSize(1);
+  int detailY = statusY + 24;
+  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI) {
+    display.setCursor(10, detailY);
+    display.print(WIFI_SSID);
+  } else if (timeSyncState == TIME_SYNC_RETRY_WAIT) {
+    int32_t retryMs = (int32_t)(nextTimeSyncAttemptMs - millis());
+    uint32_t retrySeconds = retryMs > 0 ? (uint32_t)((retryMs + 999) / 1000) : 0;
+    display.setCursor(28, detailY);
+    display.print(retrySeconds);
+    display.print("s");
+  } else if (timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
+    display.setCursor(22, detailY);
+    display.print("Israel time");
+  }
 
   display.display();
   batteryMonitor.clearDisplayDirty();
@@ -845,7 +1047,11 @@ void showReadyForPirState(bool force) {
   bool displayShouldStayOn = digitalRead(PIR_PIN) == PIR_MOTION_STATE || millis() < pirDisplayUntilMs;
 
   if (displayShouldStayOn) {
-    showClock(force, "READY");
+    if (!clockHasValidTime) {
+      showSyncStatus();
+    } else {
+      showClock(force, "READY");
+    }
     return;
   }
 
@@ -872,6 +1078,10 @@ void handleLightSleep() {
     return;
   }
 
+  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI || timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
+    return;
+  }
+
   uint32_t now = millis();
   if (now - pirDisplayUntilMs < LIGHT_SLEEP_AFTER_MS) {
     return;
@@ -886,18 +1096,38 @@ void handleLightSleep() {
   enterLightSleep();
 }
 
+void enterDeepSleep() {
+  Serial.println("Entering deep sleep. PIR motion will reboot the timer.");
+  Serial.flush();
+
+  disconnectAndDisableWifi();
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << PIR_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);
+  esp_deep_sleep_start();
+}
+
 void enterLightSleep() {
-  Serial.println("Entering light sleep. PIR motion wakes the timer.");
+  Serial.println("Entering light sleep. PIR motion or 10-minute timer wakes the timer.");
   Serial.flush();
 
   display.ssd1306_command(SSD1306_DISPLAYOFF);
   gpio_wakeup_enable((gpio_num_t)PIR_PIN, GPIO_INTR_HIGH_LEVEL);
   esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(LIGHT_SLEEP_TO_DEEP_SLEEP_US);
   esp_light_sleep_start();
   gpio_wakeup_disable((gpio_num_t)PIR_PIN);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
 
   delay(50);
   Serial.begin(115200);
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+
+  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER && digitalRead(PIR_PIN) != PIR_MOTION_STATE) {
+    Serial.println("Light sleep lasted 10 minutes without motion. Escalating to deep sleep.");
+    enterDeepSleep();
+  }
+
   Serial.println("Woke from light sleep.");
 
   display.ssd1306_command(SSD1306_DISPLAYON);
