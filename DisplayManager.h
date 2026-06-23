@@ -18,7 +18,7 @@ public:
   void showClockSetting(uint8_t hour, uint8_t minute, bool editingHour, bool editingMinute, bool fieldVisible);
   void showSyncStatus(bool force, const ClockSync& clockSync);
   void showTimer(int remainingSeconds, bool colonVisible);
-  void showMusic(int remainingSeconds);
+  void showAlarmCountdown(int remainingSeconds);
   void showClock(bool force, const char* label, uint8_t hour, uint8_t minute, uint8_t second);
 
   bool timerNeedsUpdate(int remainingSeconds, bool colonVisible) const;

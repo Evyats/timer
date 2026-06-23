@@ -156,7 +156,7 @@ void DisplayManager::showTimer(int remainingSeconds, bool colonVisible) {
   batteryMonitor_.clearDisplayDirty();
 }
 
-void DisplayManager::showMusic(int remainingSeconds) {
+void DisplayManager::showAlarmCountdown(int remainingSeconds) {
   setPower(true);
   lastDisplayedSeconds_ = remainingSeconds;
   displayBlank_ = false;
@@ -164,7 +164,7 @@ void DisplayManager::showMusic(int remainingSeconds) {
   display_.clearDisplay();
   display_.setTextColor(SSD1306_WHITE);
 
-  drawScreenFrame("MUSIC");
+  drawScreenFrame("ALARM");
   drawBatteryStatus();
 
   display_.setTextSize(3);

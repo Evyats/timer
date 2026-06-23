@@ -70,7 +70,7 @@ enum DeviceMode {
   MODE_SET_MINUTE,
   MODE_READY,
   MODE_TIMER,
-  MODE_MUSIC
+  MODE_ALARM_PLAYING
 };
 
 void showReadyForPirState(bool force, bool forceDisplayOn = false);
@@ -196,7 +196,7 @@ void loop() {
   handleEncoder();
   handleEncoderButton();
   updateTimer();
-  updateMusic();
+  updateAlarmPlayback();
   batteryMonitor.update();
   updateDisplayIfNeeded();
   handleLightSleep();
@@ -222,30 +222,18 @@ void handleEncoder() {
 
   if (mode == MODE_SET_HOUR) {
     timerController.adjustSettingHour(direction);
-    displayManager.showClockSetting(
-      timerController.settingHour(),
-      timerController.settingMinute(),
-      true,
-      false,
-      timerController.settingFieldVisible()
-    );
+    renderClockSetting();
     return;
   }
 
   if (mode == MODE_SET_MINUTE) {
     timerController.adjustSettingMinute(direction);
-    displayManager.showClockSetting(
-      timerController.settingHour(),
-      timerController.settingMinute(),
-      false,
-      true,
-      timerController.settingFieldVisible()
-    );
+    renderClockSetting();
     return;
   }
 
-  if (mode == MODE_MUSIC) {
-    stopMusic();
+  if (mode == MODE_ALARM_PLAYING) {
+    stopAlarmPlayback();
   }
 
   timerController.adjustTimer(direction);
@@ -274,13 +262,7 @@ void handleButtonPress() {
   if (mode == MODE_SET_HOUR) {
     mode = MODE_SET_MINUTE;
     timerController.restartSettingBlink();
-    displayManager.showClockSetting(
-      timerController.settingHour(),
-      timerController.settingMinute(),
-      false,
-      true,
-      timerController.settingFieldVisible()
-    );
+    renderClockSetting();
     return;
   }
 
@@ -299,14 +281,14 @@ void handleButtonPress() {
     return;
   }
 
-  if (mode == MODE_MUSIC) {
-    stopMusic();
-    Serial.println("Music stopped by button.");
+  if (mode == MODE_ALARM_PLAYING) {
+    stopAlarmPlayback();
+    Serial.println("Alarm playback stopped by button.");
     return;
   }
 
   if (mode == MODE_READY) {
-    startMusic(false);
+    startAlarmPlayback(false);
   }
 }
 
@@ -326,32 +308,20 @@ void updateTimer() {
   bool timerDone = timerController.updateCountdown();
   if (timerDone) {
     displayManager.setTimerColonCache(true);
-    startMusic(true);
+    startAlarmPlayback(true);
   }
 }
 
 void updateDisplayIfNeeded() {
   if (mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE) {
     if (batteryMonitor.displayDirty() || displayManager.settingNeedsUpdate(timerController.settingFieldVisible())) {
-      displayManager.showClockSetting(
-        timerController.settingHour(),
-        timerController.settingMinute(),
-        mode == MODE_SET_HOUR,
-        mode == MODE_SET_MINUTE,
-        timerController.settingFieldVisible()
-      );
+      renderClockSetting();
     }
     return;
   }
 
-  if (mode == MODE_MUSIC) {
-    if (alarmPlayer.activePiezoEnabled()) {
-      if (batteryMonitor.displayDirty()) {
-        displayManager.showMusic(timerController.remainingSeconds());
-      }
-    } else {
-      displayManager.showClock(batteryMonitor.displayDirty(), "MUSIC", clockSync.hour(), clockSync.minute(), clockSync.second());
-    }
+  if (mode == MODE_ALARM_PLAYING) {
+    renderAlarmPlayback(batteryMonitor.displayDirty());
     return;
   }
 
@@ -365,6 +335,27 @@ void updateDisplayIfNeeded() {
        displayManager.timerNeedsUpdate(timerController.remainingSeconds(), timerController.timerColonVisible()))) {
     displayManager.showTimer(timerController.remainingSeconds(), timerController.timerColonVisible());
   }
+}
+
+void renderClockSetting() {
+  displayManager.showClockSetting(
+    timerController.settingHour(),
+    timerController.settingMinute(),
+    mode == MODE_SET_HOUR,
+    mode == MODE_SET_MINUTE,
+    timerController.settingFieldVisible()
+  );
+}
+
+void renderAlarmPlayback(bool force) {
+  if (alarmPlayer.activePiezoEnabled()) {
+    if (force) {
+      displayManager.showAlarmCountdown(timerController.remainingSeconds());
+    }
+    return;
+  }
+
+  displayManager.showClock(force, "ALARM", clockSync.hour(), clockSync.minute(), clockSync.second());
 }
 
 void enterReadyMode() {
@@ -417,21 +408,17 @@ void handleLightSleep() {
   }
 }
 
-void startMusic(bool includeActivePiezo) {
+void startAlarmPlayback(bool includeActivePiezo) {
   if (!alarmPlayer.start(includeActivePiezo)) {
     enterReadyMode();
     return;
   }
 
-  mode = MODE_MUSIC;
-  if (includeActivePiezo) {
-    displayManager.showMusic(timerController.remainingSeconds());
-  } else {
-    displayManager.showClock(true, "MUSIC", clockSync.hour(), clockSync.minute(), clockSync.second());
-  }
+  mode = MODE_ALARM_PLAYING;
+  renderAlarmPlayback(true);
 }
 
-void stopMusic() {
+void stopAlarmPlayback() {
   if (!alarmPlayer.isActive() && !alarmPlayer.isPlaying()) {
     enterReadyMode();
     return;
@@ -441,13 +428,13 @@ void stopMusic() {
   enterReadyMode();
 }
 
-void updateMusic() {
-  if (mode != MODE_MUSIC) {
+void updateAlarmPlayback() {
+  if (mode != MODE_ALARM_PLAYING) {
     return;
   }
 
   if (!alarmPlayer.update()) {
-    stopMusic();
+    stopAlarmPlayback();
   }
 }
 
@@ -458,7 +445,7 @@ void updateSensors() {
 
   bool soundActivation = soundTrigger.update();
 
-  if (mode != MODE_MUSIC) {
+  if (mode != MODE_ALARM_PLAYING) {
     return;
   }
 
@@ -467,14 +454,14 @@ void updateSensors() {
   }
 
   if (soundActivation) {
-    Serial.println("Sound burst detected after active piezo section. Stopping music.");
-    stopMusic();
+    Serial.println("Sound burst detected after active piezo section. Stopping alarm playback.");
+    stopAlarmPlayback();
   }
 }
 
 void testPiezoOutputs() {
-  if (mode == MODE_MUSIC) {
-    stopMusic();
+  if (mode == MODE_ALARM_PLAYING) {
+    stopAlarmPlayback();
   }
 
   alarmPlayer.testOutputs();
