@@ -2,6 +2,9 @@
 
 #include <time.h>
 
+const uint32_t WIFI_CONNECT_RETRY_MS = 12000;
+const uint32_t NTP_WAIT_LOG_INTERVAL_MS = 5000;
+
 ClockSync::ClockSync(
   const char* wifiSsid,
   const char* wifiPassword,
@@ -9,14 +12,16 @@ ClockSync::ClockSync(
   const char* ntpServer1,
   const char* ntpServer2,
   const char* ntpServer3,
-  uint32_t syncTimeoutMs
+  uint32_t wifiTimeoutMs,
+  uint32_t ntpTimeoutMs
 ) : wifiSsid_(wifiSsid),
     wifiPassword_(wifiPassword),
     timezone_(timezone),
     ntpServer1_(ntpServer1),
     ntpServer2_(ntpServer2),
     ntpServer3_(ntpServer3),
-    syncTimeoutMs_(syncTimeoutMs),
+    wifiTimeoutMs_(wifiTimeoutMs),
+    ntpTimeoutMs_(ntpTimeoutMs),
     syncState_(TIME_SYNC_IDLE),
     hasValidTime_(false),
     hour_(0),
@@ -24,12 +29,17 @@ ClockSync::ClockSync(
     second_(0),
     lastClockTickMs_(0),
     syncStartedAtMs_(0),
+    ntpStartedAtMs_(0),
+    lastNtpWaitLogMs_(0),
+    connectAttemptStartedAtMs_(0),
+    connectAttempt_(0),
     lastLoggedWifiStatus_(WL_IDLE_STATUS) {
 }
 
 void ClockSync::begin() {
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
+  WiFi.setSleep(false);
   lastClockTickMs_ = millis();
 }
 
@@ -38,13 +48,10 @@ void ClockSync::startSync() {
     return;
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid_, wifiPassword_);
   syncState_ = TIME_SYNC_CONNECTING_WIFI;
   syncStartedAtMs_ = millis();
-  lastLoggedWifiStatus_ = WL_IDLE_STATUS;
-  Serial.print("Connecting to Wi-Fi SSID ");
-  Serial.println(wifiSsid_);
+  connectAttempt_ = 0;
+  beginConnectionAttempt();
 }
 
 bool ClockSync::updateSync() {
@@ -55,33 +62,51 @@ bool ClockSync::updateSync() {
   }
 
   uint32_t now = millis();
-  if (now - syncStartedAtMs_ >= syncTimeoutMs_) {
-    Serial.println("Time sync timed out.");
-    finishSync(false);
-    return true;
-  }
-
   if (syncState_ == TIME_SYNC_CONNECTING_WIFI) {
+    if (now - syncStartedAtMs_ >= wifiTimeoutMs_) {
+      Serial.println("Wi-Fi connection timed out.");
+      logScanResult();
+      finishSync(false);
+      return true;
+    }
+
     wl_status_t wifiStatus = WiFi.status();
     if (wifiStatus != lastLoggedWifiStatus_) {
       lastLoggedWifiStatus_ = wifiStatus;
-      Serial.print("Wi-Fi status changed: ");
-      Serial.println((int)wifiStatus);
+      logWifiStatus(wifiStatus);
     }
 
     if (wifiStatus == WL_CONNECTED) {
       Serial.print("Wi-Fi connected. IP: ");
       Serial.println(WiFi.localIP());
+      Serial.print("Wi-Fi RSSI: ");
+      Serial.print(WiFi.RSSI());
+      Serial.println(" dBm");
       configTzTime(timezone_, ntpServer1_, ntpServer2_, ntpServer3_);
+      ntpStartedAtMs_ = now;
+      lastNtpWaitLogMs_ = now;
       syncState_ = TIME_SYNC_WAITING_FOR_TIME;
       Serial.println("Waiting for NTP time...");
       return true;
     }
+
+    if (now - connectAttemptStartedAtMs_ >= WIFI_CONNECT_RETRY_MS) {
+      Serial.println("Wi-Fi connect attempt timed out. Restarting Wi-Fi connection.");
+      beginConnectionAttempt();
+      return true;
+    }
+
     return false;
   }
 
   if (syncState_ != TIME_SYNC_WAITING_FOR_TIME) {
     return false;
+  }
+
+  wl_status_t wifiStatus = WiFi.status();
+  if (wifiStatus != lastLoggedWifiStatus_) {
+    lastLoggedWifiStatus_ = wifiStatus;
+    logWifiStatus(wifiStatus);
   }
 
   time_t nowSeconds = time(nullptr);
@@ -91,7 +116,47 @@ bool ClockSync::updateSync() {
     return true;
   }
 
+  if (now - ntpStartedAtMs_ >= ntpTimeoutMs_) {
+    Serial.print("NTP sync timed out after ");
+    Serial.print((now - ntpStartedAtMs_) / 1000);
+    Serial.println(" seconds.");
+    Serial.print("Wi-Fi still connected: ");
+    Serial.println(WiFi.status() == WL_CONNECTED ? "yes" : "no");
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("Wi-Fi RSSI at NTP timeout: ");
+      Serial.print(WiFi.RSSI());
+      Serial.println(" dBm");
+    }
+    finishSync(false);
+    return true;
+  }
+
+  if (now - lastNtpWaitLogMs_ >= NTP_WAIT_LOG_INTERVAL_MS) {
+    lastNtpWaitLogMs_ = now;
+    Serial.print("Still waiting for NTP time, elapsed ");
+    Serial.print((now - ntpStartedAtMs_) / 1000);
+    Serial.println(" seconds.");
+  }
+
   return false;
+}
+
+void ClockSync::beginConnectionAttempt() {
+  connectAttempt_++;
+  connectAttemptStartedAtMs_ = millis();
+  lastLoggedWifiStatus_ = WL_IDLE_STATUS;
+
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+
+  Serial.print("Connecting to Wi-Fi SSID ");
+  Serial.print(wifiSsid_);
+  Serial.print(" attempt ");
+  Serial.println(connectAttempt_);
+
+  WiFi.begin(wifiSsid_, wifiPassword_);
 }
 
 void ClockSync::updateClock(bool pauseClock) {
@@ -183,6 +248,71 @@ void ClockSync::finishSync(bool success) {
   } else {
     syncState_ = TIME_SYNC_FAILED;
     Serial.println("Wi-Fi disconnected. Time sync failed.");
+  }
+}
+
+void ClockSync::logWifiStatus(wl_status_t wifiStatus) const {
+  Serial.print("Wi-Fi status changed: ");
+  Serial.print((int)wifiStatus);
+  Serial.print(" (");
+  Serial.print(wifiStatusName(wifiStatus));
+  Serial.println(")");
+}
+
+void ClockSync::logScanResult() {
+  Serial.print("Scanning for Wi-Fi SSID ");
+  Serial.print(wifiSsid_);
+  Serial.println(" before giving up...");
+
+  WiFi.disconnect(false, false);
+  int networkCount = WiFi.scanNetworks(false, true);
+  if (networkCount < 0) {
+    Serial.print("Wi-Fi scan failed: ");
+    Serial.println(networkCount);
+    return;
+  }
+
+  bool foundSsid = false;
+  for (int i = 0; i < networkCount; i++) {
+    if (WiFi.SSID(i) == wifiSsid_) {
+      foundSsid = true;
+      Serial.print("Found target SSID. RSSI: ");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(" dBm, channel: ");
+      Serial.print(WiFi.channel(i));
+      Serial.print(", encryption: ");
+      Serial.println((int)WiFi.encryptionType(i));
+    }
+  }
+
+  if (!foundSsid) {
+    Serial.print("Target SSID not found. Networks seen: ");
+    Serial.println(networkCount);
+  }
+
+  WiFi.scanDelete();
+}
+
+const char* ClockSync::wifiStatusName(wl_status_t wifiStatus) const {
+  switch (wifiStatus) {
+    case WL_IDLE_STATUS:
+      return "IDLE";
+    case WL_NO_SSID_AVAIL:
+      return "NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED:
+      return "SCAN_COMPLETED";
+    case WL_CONNECTED:
+      return "CONNECTED";
+    case WL_CONNECT_FAILED:
+      return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST:
+      return "CONNECTION_LOST";
+    case WL_DISCONNECTED:
+      return "DISCONNECTED";
+    case WL_NO_SHIELD:
+      return "NO_SHIELD";
+    default:
+      return "UNKNOWN";
   }
 }
 

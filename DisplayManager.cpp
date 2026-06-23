@@ -22,6 +22,7 @@ DisplayManager::DisplayManager(Adafruit_SSD1306& display, BatteryMonitor& batter
     batteryMonitor_(batteryMonitor),
     displayPowerEnabled_(true),
     displayBlank_(false),
+    blankedAtMs_(0),
     lastDisplayedSeconds_(-1),
     lastDisplayedTimerColon_(false),
     lastDisplayedSyncState_(TIME_SYNC_IDLE),
@@ -44,6 +45,10 @@ bool DisplayManager::isBlank() const {
   return displayBlank_;
 }
 
+bool DisplayManager::blankedForAtLeast(uint32_t durationMs) const {
+  return displayBlank_ && (int32_t)(millis() - blankedAtMs_) >= (int32_t)durationMs;
+}
+
 void DisplayManager::blank() {
   if (displayBlank_) {
     batteryMonitor_.clearDisplayDirty();
@@ -53,6 +58,7 @@ void DisplayManager::blank() {
   display_.clearDisplay();
   display_.display();
   displayBlank_ = true;
+  blankedAtMs_ = millis();
   batteryMonitor_.clearDisplayDirty();
   lastDisplayedSeconds_ = -1;
   lastDisplayedClockHour_ = -1;

@@ -92,7 +92,8 @@ ClockSync clockSync(
   NTP_SERVER_1,
   NTP_SERVER_2,
   NTP_SERVER_3,
-  TIME_SYNC_TOTAL_TIMEOUT_MS
+  TIME_SYNC_WIFI_TIMEOUT_MS,
+  TIME_SYNC_NTP_TIMEOUT_MS
 );
 DisplayManager displayManager(display, batteryMonitor);
 InputController inputController(
@@ -388,7 +389,7 @@ void handleDeepSleep() {
     return;
   }
 
-  if (!pirMotion.idleForAtLeast(DEEP_SLEEP_AFTER_MS)) {
+  if (!displayManager.blankedForAtLeast(DEEP_SLEEP_AFTER_MS)) {
     return;
   }
 
@@ -418,6 +419,7 @@ void stopAlarmPlayback() {
   }
 
   alarmPlayer.stop();
+  pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
   enterReadyMode();
 }
 

@@ -13,6 +13,7 @@ public:
 
   void setPower(bool enabled);
   bool isBlank() const;
+  bool blankedForAtLeast(uint32_t durationMs) const;
   void blank();
 
   void showClockSetting(uint8_t hour, uint8_t minute, bool editingHour, bool editingMinute, bool fieldVisible);
@@ -39,6 +40,7 @@ private:
 
   bool displayPowerEnabled_;
   bool displayBlank_;
+  uint32_t blankedAtMs_;
   int lastDisplayedSeconds_;
   bool lastDisplayedTimerColon_;
   TimeSyncState lastDisplayedSyncState_;

@@ -76,7 +76,8 @@ const uint16_t PIEZO_SLIDE_UPDATE_INTERVAL_MS = 10;
 const uint32_t TIMER_START_DELAY_MS = 2000;
 const uint32_t TIMER_COLON_BLINK_DELAY_MS = 1000;
 
-const uint32_t TIME_SYNC_TOTAL_TIMEOUT_MS = 20000;
+const uint32_t TIME_SYNC_WIFI_TIMEOUT_MS = 45000;
+const uint32_t TIME_SYNC_NTP_TIMEOUT_MS = 30000;
 const char* const ISRAEL_TZ = "IST-2IDT,M3.4.4/26,M10.5.0";
 const char* const NTP_SERVER_1 = "pool.ntp.org";
 const char* const NTP_SERVER_2 = "time.google.com";

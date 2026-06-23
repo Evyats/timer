@@ -21,7 +21,8 @@ public:
     const char* ntpServer1,
     const char* ntpServer2,
     const char* ntpServer3,
-    uint32_t syncTimeoutMs
+    uint32_t wifiTimeoutMs,
+    uint32_t ntpTimeoutMs
   );
 
   void begin();
@@ -41,8 +42,12 @@ public:
   uint8_t second() const;
 
 private:
+  void beginConnectionAttempt();
   void finishSync(bool success);
   void applySyncedClock();
+  void logWifiStatus(wl_status_t wifiStatus) const;
+  void logScanResult();
+  const char* wifiStatusName(wl_status_t wifiStatus) const;
 
   const char* wifiSsid_;
   const char* wifiPassword_;
@@ -50,7 +55,8 @@ private:
   const char* ntpServer1_;
   const char* ntpServer2_;
   const char* ntpServer3_;
-  uint32_t syncTimeoutMs_;
+  uint32_t wifiTimeoutMs_;
+  uint32_t ntpTimeoutMs_;
 
   TimeSyncState syncState_;
   bool hasValidTime_;
@@ -59,6 +65,10 @@ private:
   uint8_t second_;
   uint32_t lastClockTickMs_;
   uint32_t syncStartedAtMs_;
+  uint32_t ntpStartedAtMs_;
+  uint32_t lastNtpWaitLogMs_;
+  uint32_t connectAttemptStartedAtMs_;
+  uint8_t connectAttempt_;
   wl_status_t lastLoggedWifiStatus_;
 };
 
