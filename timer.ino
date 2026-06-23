@@ -2,13 +2,15 @@
 #include <Adafruit_SSD1306.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
-#include <PiezoMidiPlayer.h>
-#include <WiFi.h>
 #include <Wire.h>
-#include <time.h>
 
+#include "AlarmPlayer.h"
 #include "BatteryMonitor.h"
-#include "songs/Songs.h"
+#include "ClockSync.h"
+#include "DisplayManager.h"
+#include "InputController.h"
+#include "PirMotion.h"
+#include "SoundTrigger.h"
 #include "wifi_secrets.h"
 
 /*
@@ -70,31 +72,11 @@ enum DeviceMode {
   MODE_MUSIC
 };
 
-enum TimeSyncState {
-  TIME_SYNC_IDLE,
-  TIME_SYNC_CONNECTING_WIFI,
-  TIME_SYNC_WAITING_FOR_TIME,
-  TIME_SYNC_FAILED,
-  TIME_SYNC_COMPLETE
-};
-
 void showReadyForPirState(bool force, bool forceDisplayOn = false);
 
 const int SCREEN_WIDTH = 128;
 const int SCREEN_HEIGHT = 64;
-const int HEADER_HEIGHT = 16;
-const int CONTENT_TOP = HEADER_HEIGHT + 1;
-const int CONTENT_HEIGHT = SCREEN_HEIGHT - HEADER_HEIGHT - 1;
-const int CLOCK_TEXT_SIZE = 3;
-const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
-const int CLOCK_AM_PM_GAP = 6;
-const int CLOCK_AM_PM_Y_OFFSET = 8;
 const int OLED_ADDRESS = 0x3C;
-const bool SHOW_SECTION_BORDERS = false;
-const bool SHOW_STATE_TEXT = true;
-const bool SHOW_BATTERY_TEXT = true;
-const bool CENTER_BATTERY_ICON = false;
-const bool USE_12_HOUR_CLOCK = false;
 
 //// Regular ESP32 pin assignment:
 // const int SDA_PIN = 21;
@@ -180,20 +162,7 @@ const uint32_t BATTERY_SAMPLE_INTERVAL_MS = 2;
 const float BATTERY_R1_OHMS = 100000.0;
 const float BATTERY_R2_OHMS = 100000.0;
 
-const PiezoVoice PIEZO_VOICES_WITH_ACTIVE[] = {
-  { ACTIVE_PIEZO_PIN, 0, true },
-  { MAIN_PIEZO_PIN, 1 },
-  { HARMONY_PIEZO_PIN, 2 },
-};
-
-const PiezoVoice PIEZO_VOICES_PASSIVE_ONLY[] = {
-  { ACTIVE_PIEZO_PIN, 0, true, true },
-  { MAIN_PIEZO_PIN, 1 },
-  { HARMONY_PIEZO_PIN, 2 },
-};
-
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-PiezoPlayer piezoPlayer;
 BatteryMonitor batteryMonitor(
   BATTERY_ADC_PIN,
   BATTERY_R1_OHMS,
@@ -203,72 +172,68 @@ BatteryMonitor batteryMonitor(
   BATTERY_UPDATE_MS,
   BATTERY_SAMPLE_INTERVAL_MS
 );
-const PiezoSong* currentSong = nullptr;
+ClockSync clockSync(
+  WIFI_SSID,
+  WIFI_PASSWORD,
+  ISRAEL_TZ,
+  NTP_SERVER_1,
+  NTP_SERVER_2,
+  NTP_SERVER_3,
+  TIME_SYNC_TOTAL_TIMEOUT_MS
+);
+DisplayManager displayManager(display, batteryMonitor);
+InputController inputController(
+  ENCODER_S1_PIN,
+  ENCODER_S2_PIN,
+  ENCODER_BUTTON_PIN,
+  REVERSE_ENCODER_DIRECTION,
+  BUTTON_DEBOUNCE_MS,
+  LOG_ENCODER_RAW_STATES
+);
+SoundTrigger soundTrigger(
+  SOUND_PIN,
+  SOUND_DETECTED_STATE,
+  SOUND_TRIGGER_MIN_PULSES,
+  SOUND_TRIGGER_WINDOW_MS,
+  SOUND_TRIGGER_COOLDOWN_MS,
+  LOG_RAW_SOUND_EDGES
+);
+PirMotion pirMotion(
+  PIR_PIN,
+  PIR_MOTION_STATE,
+  PIR_WARMUP_MS,
+  PIR_CONFIRM_MS,
+  PIR_DISPLAY_HOLD_MS
+);
+AlarmPlayer alarmPlayer(
+  ACTIVE_PIEZO_PIN,
+  ACTIVE_PIEZO_LED_PIN,
+  MAIN_PIEZO_PIN,
+  HARMONY_PIEZO_PIN,
+  ACTIVE_PIEZO_VOICE,
+  PIEZO_SELF_TEST_TONE_HZ,
+  PIEZO_SELF_TEST_MS,
+  PIEZO_SLIDE_UPDATE_INTERVAL_MS
+);
 
 DeviceMode mode = MODE_SET_HOUR;
-TimeSyncState timeSyncState = TIME_SYNC_IDLE;
 
 int remainingSeconds = 0;
 uint32_t nextTimerTickMs = 0;
 uint32_t timerBlinkStartedAtMs = 0;
-int lastDisplayedSeconds = -1;
-bool lastDisplayedTimerColon = false;
 
-uint8_t clockHour = 0;
-uint8_t clockMinute = 0;
-uint8_t clockSecond = 0;
 uint8_t settingHour = 0;
 uint8_t settingMinute = 0;
-unsigned long lastClockTickMs = 0;
-TimeSyncState lastDisplayedSyncState = TIME_SYNC_IDLE;
-int lastDisplayedClockHour = -1;
-int lastDisplayedClockMinute = -1;
-bool lastDisplayedClockColon = false;
-bool lastDisplayedSettingBlink = true;
 uint32_t settingBlinkStartedAtMs = 0;
-
-bool alarmPlaying = false;
-bool activePiezoEnabled = false;
-bool activePiezoLedOn = false;
-uint32_t nextActivePiezoLedEvent = 0;
-uint32_t soundIgnoredUntilSongMs = 0;
-
-int lastPirState = LOW;
-int lastPirReading = LOW;
-uint32_t pirHighStartedAtMs = 0;
-bool pirMotionConfirmed = false;
-uint32_t pirDisplayUntilMs = 0;
-int lastSoundState = HIGH;
-bool displayBlank = false;
-uint8_t soundPulseCount = 0;
-uint32_t firstSoundPulseMs = 0;
-uint32_t lastSoundActivationMs = 0;
-
-bool lastButtonReading = HIGH;
-bool stableButtonState = HIGH;
-uint32_t lastButtonChangeMs = 0;
-bool clockHasValidTime = false;
-uint32_t timeSyncStartedAtMs = 0;
-wl_status_t lastLoggedWifiStatus = WL_IDLE_STATUS;
-uint32_t pirWarmupUntilMs = 0;
-bool displayPowerEnabled = true;
 
 void setup() {
   Serial.begin(115200);
   randomSeed(micros());
 
-  pinMode(ENCODER_S1_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_S2_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(PIR_PIN, INPUT);
-  pinMode(SOUND_PIN, INPUT);
-
-  if (ACTIVE_PIEZO_LED_PIN != ACTIVE_PIEZO_PIN) {
-    pinMode(ACTIVE_PIEZO_LED_PIN, OUTPUT);
-    digitalWrite(ACTIVE_PIEZO_LED_PIN, LOW);
-  }
-  configurePiezoVoices(true);
-  piezoPlayer.setSlideUpdateIntervalMs(PIEZO_SLIDE_UPDATE_INTERVAL_MS);
+  inputController.begin();
+  pirMotion.begin();
+  soundTrigger.begin();
+  alarmPlayer.begin();
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -283,23 +248,16 @@ void setup() {
   display.clearDisplay();
   display.display();
 
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
+  clockSync.begin();
 
   Serial.println();
   Serial.println("OLED rotary timer");
   Serial.print("Wakeup cause: ");
   Serial.println((int)esp_sleep_get_wakeup_cause());
   Serial.println("PIR warmup running in background.");
-  pirWarmupUntilMs = millis() + PIR_WARMUP_MS;
-  lastPirState = digitalRead(PIR_PIN);
-  lastPirReading = lastPirState;
-  pirMotionConfirmed = false;
-  lastSoundState = digitalRead(SOUND_PIN);
-  lastClockTickMs = millis();
   settingBlinkStartedAtMs = millis();
   mode = MODE_READY;
-  beginTimeSync();
+  clockSync.startSync();
   showReadyForPirState(true, true);
 
   Serial.println("Starting background Wi-Fi time sync.");
@@ -308,7 +266,11 @@ void setup() {
 
 void loop() {
   handleSerialCommands();
-  updateTimeSync();
+  bool syncDisplayChanged = clockSync.updateSync();
+  if (syncDisplayChanged && mode == MODE_READY) {
+    displayManager.resetClockCache();
+    showReadyForPirState(true, true);
+  }
   updateClock();
   updateSensors();
   handleEncoder();
@@ -318,178 +280,6 @@ void loop() {
   batteryMonitor.update();
   updateDisplayIfNeeded();
   handleLightSleep();
-}
-
-void drawScreenFrame(const char* stateLabel) {
-  if (SHOW_SECTION_BORDERS) {
-    display.drawRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
-    display.drawRect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT, SSD1306_WHITE);
-  }
-
-  if (SHOW_STATE_TEXT) {
-    display.setTextSize(1);
-    display.setCursor(2, 4);
-    display.print(stateLabel);
-  }
-}
-
-void drawBatteryStatus() {
-  const int batteryWidth = 18;
-  const int batteryHeight = 7;
-  const int batteryX = CENTER_BATTERY_ICON ? (SCREEN_WIDTH - batteryWidth) / 2 : SCREEN_WIDTH - batteryWidth - 3;
-  const int batteryY = (HEADER_HEIGHT - batteryHeight) / 2;
-  const int terminalWidth = 2;
-  const int terminalHeight = 3;
-  const int terminalY = batteryY + (batteryHeight - terminalHeight) / 2;
-  const int fillWidth = map(constrain(batteryMonitor.stablePercent(), 0, 100), 0, 100, 0, batteryWidth - 4);
-  String batteryVoltsText = String(batteryMonitor.batteryVolts(), 2) + "V";
-  String percentText = String(batteryMonitor.percent()) + "%";
-  const int batteryVoltsTextWidth = batteryVoltsText.length() * 6;
-  const int percentTextWidth = percentText.length() * 6;
-  const int textY = 4;
-  const int percentTextX = batteryX - terminalWidth - 3 - percentTextWidth;
-  const int batteryVoltsTextX = percentTextX - 4 - batteryVoltsTextWidth;
-
-  if (SHOW_BATTERY_TEXT) {
-    display.setTextSize(1);
-    display.setCursor(batteryVoltsTextX, textY);
-    display.print(batteryVoltsText);
-    display.setCursor(percentTextX, textY);
-    display.print(percentText);
-  }
-
-  display.drawRect(batteryX, batteryY, batteryWidth, batteryHeight, SSD1306_WHITE);
-  display.fillRect(batteryX - terminalWidth, terminalY, terminalWidth, terminalHeight, SSD1306_WHITE);
-  display.fillRect(batteryX + batteryWidth - 2 - fillWidth, batteryY + 2, fillWidth, batteryHeight - 4, SSD1306_WHITE);
-}
-
-void configurePiezoVoices(bool includeActivePiezo) {
-  if (includeActivePiezo) {
-    piezoPlayer.begin(PIEZO_VOICES_WITH_ACTIVE, sizeof(PIEZO_VOICES_WITH_ACTIVE) / sizeof(PIEZO_VOICES_WITH_ACTIVE[0]));
-  } else {
-    piezoPlayer.begin(PIEZO_VOICES_PASSIVE_ONLY, sizeof(PIEZO_VOICES_PASSIVE_ONLY) / sizeof(PIEZO_VOICES_PASSIVE_ONLY[0]));
-    digitalWrite(ACTIVE_PIEZO_PIN, LOW);
-  }
-
-  writeActivePiezoLed(false);
-}
-
-void writeActivePiezoLed(bool on) {
-  if (ACTIVE_PIEZO_LED_PIN == ACTIVE_PIEZO_PIN) {
-    return;
-  }
-
-  digitalWrite(ACTIVE_PIEZO_LED_PIN, on ? HIGH : LOW);
-}
-
-void setDisplayPower(bool enabled) {
-  if (displayPowerEnabled == enabled) {
-    return;
-  }
-
-  display.ssd1306_command(enabled ? SSD1306_DISPLAYON : SSD1306_DISPLAYOFF);
-  displayPowerEnabled = enabled;
-}
-
-void disconnectAndDisableWifi() {
-  WiFi.disconnect(true, true);
-  WiFi.mode(WIFI_OFF);
-}
-
-void beginTimeSync() {
-  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI || timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
-    return;
-  }
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  timeSyncState = TIME_SYNC_CONNECTING_WIFI;
-  timeSyncStartedAtMs = millis();
-  lastLoggedWifiStatus = WL_IDLE_STATUS;
-  Serial.print("Connecting to Wi-Fi SSID ");
-  Serial.println(WIFI_SSID);
-}
-
-void finishTimeSync(bool success) {
-  disconnectAndDisableWifi();
-
-  if (success) {
-    timeSyncState = TIME_SYNC_COMPLETE;
-    Serial.println("Wi-Fi disconnected. Time sync complete.");
-  } else {
-    timeSyncState = TIME_SYNC_FAILED;
-    Serial.println("Wi-Fi disconnected. Time sync failed.");
-    if (mode == MODE_READY) {
-      showReadyForPirState(true, true);
-    }
-  }
-}
-
-void applySyncedClock() {
-  time_t nowSeconds = time(nullptr);
-  struct tm timeInfo;
-  localtime_r(&nowSeconds, &timeInfo);
-
-  clockHasValidTime = true;
-  clockHour = timeInfo.tm_hour;
-  clockMinute = timeInfo.tm_min;
-  clockSecond = timeInfo.tm_sec;
-  lastClockTickMs = millis();
-  lastDisplayedClockHour = -1;
-  lastDisplayedClockMinute = -1;
-  lastDisplayedClockColon = false;
-
-  Serial.print("Clock synced from NTP: ");
-  printClockToSerial();
-
-  if (mode == MODE_READY) {
-    showReadyForPirState(true, true);
-  }
-}
-
-void updateTimeSync() {
-  if (timeSyncState == TIME_SYNC_IDLE ||
-      timeSyncState == TIME_SYNC_COMPLETE ||
-      timeSyncState == TIME_SYNC_FAILED) {
-    return;
-  }
-
-  uint32_t now = millis();
-  if (now - timeSyncStartedAtMs >= TIME_SYNC_TOTAL_TIMEOUT_MS) {
-    Serial.println("Time sync timed out.");
-    finishTimeSync(false);
-    return;
-  }
-
-  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI) {
-    wl_status_t wifiStatus = WiFi.status();
-    if (wifiStatus != lastLoggedWifiStatus) {
-      lastLoggedWifiStatus = wifiStatus;
-      Serial.print("Wi-Fi status changed: ");
-      Serial.println((int)wifiStatus);
-    }
-
-    if (wifiStatus == WL_CONNECTED) {
-      Serial.print("Wi-Fi connected. IP: ");
-      Serial.println(WiFi.localIP());
-      configTzTime(ISRAEL_TZ, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
-      timeSyncState = TIME_SYNC_WAITING_FOR_TIME;
-      Serial.println("Waiting for NTP time...");
-      return;
-    }
-    return;
-  }
-
-  if (timeSyncState != TIME_SYNC_WAITING_FOR_TIME) {
-    return;
-  }
-
-  time_t nowSeconds = time(nullptr);
-  if (nowSeconds > 1700000000) {
-    applySyncedClock();
-    finishTimeSync(true);
-    return;
-  }
 }
 
 void handleSerialCommands() {
@@ -504,7 +294,7 @@ void handleSerialCommands() {
 }
 
 void handleEncoder() {
-  int direction = readEncoderStep();
+  int direction = inputController.readEncoderStep();
 
   if (direction == 0) {
     return;
@@ -544,8 +334,8 @@ void handleEncoder() {
     mode = MODE_TIMER;
     nextTimerTickMs = now + TIMER_START_DELAY_MS;
     timerBlinkStartedAtMs = now + TIMER_COLON_BLINK_DELAY_MS;
-    lastDisplayedTimerColon = true;
-    showTimer();
+    displayManager.setTimerColonCache(true);
+    displayManager.showTimer(remainingSeconds, timerColonVisible());
   } else {
     enterReadyMode();
   }
@@ -553,88 +343,6 @@ void handleEncoder() {
   Serial.print("Timer set to ");
   Serial.print(remainingSeconds);
   Serial.println(" seconds");
-}
-
-int readEncoderStep() {
-  static int lastState = 0;
-  static int movement = 0;
-  static bool initialized = false;
-
-  int s1 = digitalRead(ENCODER_S1_PIN);
-  int s2 = digitalRead(ENCODER_S2_PIN);
-  int state = (s1 << 1) | s2;
-
-  if (!initialized) {
-    lastState = state;
-    initialized = true;
-    printEncoderRawState(s1, s2, state);
-    return 0;
-  }
-
-  if (state == lastState) {
-    return 0;
-  }
-
-  printEncoderRawState(s1, s2, state);
-
-  int transition = (lastState << 2) | state;
-  lastState = state;
-  int direction = 0;
-
-  switch (transition) {
-    case 0b0001:
-    case 0b0111:
-    case 0b1110:
-    case 0b1000:
-      direction = 1;
-      break;
-
-    case 0b0010:
-    case 0b1011:
-    case 0b1101:
-    case 0b0100:
-      direction = -1;
-      break;
-
-    default:
-      return 0;
-  }
-
-  movement += direction;
-
-  if (movement >= 4) {
-    movement = 0;
-    return REVERSE_ENCODER_DIRECTION ? -1 : 1;
-  }
-
-  if (movement <= -4) {
-    movement = 0;
-    return REVERSE_ENCODER_DIRECTION ? 1 : -1;
-  }
-
-  return 0;
-}
-
-void printEncoderRawState(int s1, int s2, int state) {
-  if (!LOG_ENCODER_RAW_STATES) {
-    return;
-  }
-
-  Serial.print(millis());
-  Serial.print(" ms encoder rotated: S1 GPIO");
-  Serial.print(ENCODER_S1_PIN);
-  Serial.print("=");
-  Serial.print(s1 == HIGH ? "HIGH" : "LOW");
-  Serial.print(" S2 GPIO");
-  Serial.print(ENCODER_S2_PIN);
-  Serial.print("=");
-  Serial.print(s2 == HIGH ? "HIGH" : "LOW");
-  Serial.print(" BUTTON GPIO");
-  Serial.print(ENCODER_BUTTON_PIN);
-  Serial.print("=");
-  Serial.print(digitalRead(ENCODER_BUTTON_PIN) == HIGH ? "HIGH" : "LOW");
-  Serial.print(" state=");
-  Serial.println(state, BIN);
 }
 
 int wrapValue(int value, int minimumValue, int maximumValue) {
@@ -650,46 +358,12 @@ int wrapValue(int value, int minimumValue, int maximumValue) {
 }
 
 void handleEncoderButton() {
-  bool reading = digitalRead(ENCODER_BUTTON_PIN);
-  uint32_t now = millis();
-
-  if (reading != lastButtonReading) {
-    lastButtonChangeMs = now;
-    lastButtonReading = reading;
-  }
-
-  if (now - lastButtonChangeMs < BUTTON_DEBOUNCE_MS) {
-    return;
-  }
-
-  if (reading == stableButtonState) {
-    return;
-  }
-
-  stableButtonState = reading;
-
-  if (stableButtonState == LOW) {
+  if (inputController.buttonPressed()) {
     handleButtonPress();
   }
 }
 
 void handleButtonPress() {
-  if (LOG_ENCODER_RAW_STATES) {
-    Serial.print(millis());
-    Serial.print(" ms encoder button pressed: S1 GPIO");
-    Serial.print(ENCODER_S1_PIN);
-    Serial.print("=");
-    Serial.print(digitalRead(ENCODER_S1_PIN) == HIGH ? "HIGH" : "LOW");
-    Serial.print(" S2 GPIO");
-    Serial.print(ENCODER_S2_PIN);
-    Serial.print("=");
-    Serial.print(digitalRead(ENCODER_S2_PIN) == HIGH ? "HIGH" : "LOW");
-    Serial.print(" BUTTON GPIO");
-    Serial.print(ENCODER_BUTTON_PIN);
-    Serial.print("=");
-    Serial.println(digitalRead(ENCODER_BUTTON_PIN) == HIGH ? "HIGH" : "LOW");
-  }
-
   keepDisplayOnAfterButtonPress();
 
   if (mode == MODE_SET_HOUR) {
@@ -700,10 +374,7 @@ void handleButtonPress() {
   }
 
   if (mode == MODE_SET_MINUTE) {
-    clockHour = settingHour;
-    clockMinute = settingMinute;
-    clockSecond = 0;
-    lastClockTickMs = millis();
+    clockSync.setManualTime(settingHour, settingMinute);
     enterReadyMode();
     Serial.print("Clock set to ");
     printClockToSerial();
@@ -729,35 +400,11 @@ void handleButtonPress() {
 }
 
 void keepDisplayOnAfterButtonPress() {
-  pirDisplayUntilMs = millis() + BUTTON_DISPLAY_HOLD_MS;
+  pirMotion.keepDisplayOn(BUTTON_DISPLAY_HOLD_MS);
 }
 
 void updateClock() {
-  if (mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE) {
-    lastClockTickMs = millis();
-    return;
-  }
-
-  if (!clockHasValidTime) {
-    lastClockTickMs = millis();
-    return;
-  }
-
-  uint32_t now = millis();
-  uint32_t elapsedMs = now - lastClockTickMs;
-  uint32_t elapsedSeconds = elapsedMs / 1000;
-  if (elapsedSeconds == 0) {
-    return;
-  }
-
-  lastClockTickMs += elapsedSeconds * 1000;
-
-  uint32_t totalSeconds = clockSecond + elapsedSeconds;
-  clockSecond = totalSeconds % 60;
-
-  uint32_t totalMinutes = clockMinute + (totalSeconds / 60);
-  clockMinute = totalMinutes % 60;
-  clockHour = (clockHour + (totalMinutes / 60)) % 24;
+  clockSync.updateClock(mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE);
 }
 
 void updateTimer() {
@@ -780,19 +427,19 @@ void updateTimer() {
 
 void updateDisplayIfNeeded() {
   if (mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE) {
-    if (batteryMonitor.displayDirty() || settingFieldVisible() != lastDisplayedSettingBlink) {
+    if (batteryMonitor.displayDirty() || displayManager.settingNeedsUpdate(settingFieldVisible())) {
       showClockSetting();
     }
     return;
   }
 
   if (mode == MODE_MUSIC) {
-    if (activePiezoEnabled) {
+    if (alarmPlayer.activePiezoEnabled()) {
       if (batteryMonitor.displayDirty()) {
-        showMusic();
+        displayManager.showMusic(remainingSeconds);
       }
     } else {
-      showClock(batteryMonitor.displayDirty(), "MUSIC");
+      displayManager.showClock(batteryMonitor.displayDirty(), "MUSIC", clockSync.hour(), clockSync.minute(), clockSync.second());
     }
     return;
   }
@@ -803,167 +450,19 @@ void updateDisplayIfNeeded() {
   }
 
   if (mode == MODE_TIMER &&
-      (batteryMonitor.displayDirty() || remainingSeconds != lastDisplayedSeconds || timerColonVisible() != lastDisplayedTimerColon)) {
-    showTimer();
-  }
-}
-
-const char* syncStatusText() {
-  switch (timeSyncState) {
-    case TIME_SYNC_CONNECTING_WIFI:
-      return "WIFI...";
-    case TIME_SYNC_WAITING_FOR_TIME:
-      return "NTP...";
-    case TIME_SYNC_FAILED:
-      return "NO WIFI";
-    case TIME_SYNC_COMPLETE:
-      return "DONE";
-    case TIME_SYNC_IDLE:
-    default:
-      return "IDLE";
+      (batteryMonitor.displayDirty() || displayManager.timerNeedsUpdate(remainingSeconds, timerColonVisible()))) {
+    displayManager.showTimer(remainingSeconds, timerColonVisible());
   }
 }
 
 void showClockSetting() {
-  setDisplayPower(true);
-  displayBlank = false;
-  lastDisplayedSeconds = -1;
-  lastDisplayedClockHour = -1;
-  lastDisplayedClockMinute = -1;
-  lastDisplayedSettingBlink = settingFieldVisible();
-
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame(mode == MODE_SET_HOUR ? "SET H" : "SET M");
-  drawBatteryStatus();
-
-  drawClockTime(settingHour, settingMinute, true, mode != MODE_SET_HOUR || lastDisplayedSettingBlink, mode != MODE_SET_MINUTE || lastDisplayedSettingBlink);
-
-  display.display();
-  batteryMonitor.clearDisplayDirty();
-}
-
-void showSyncStatus(bool force) {
-  if (!force &&
-      !displayBlank &&
-      timeSyncState == lastDisplayedSyncState &&
-      !batteryMonitor.displayDirty()) {
-    return;
-  }
-
-  setDisplayPower(true);
-  displayBlank = false;
-  lastDisplayedSeconds = -1;
-  lastDisplayedClockHour = -1;
-  lastDisplayedClockMinute = -1;
-  lastDisplayedSyncState = timeSyncState;
-
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame("SYNC");
-  drawBatteryStatus();
-
-  display.setTextSize(2);
-  const char* status = syncStatusText();
-  int statusWidth = strlen(status) * 12;
-  int statusX = (SCREEN_WIDTH - statusWidth) / 2;
-  int statusY = CONTENT_TOP + 8;
-  display.setCursor(statusX, statusY);
-  display.print(status);
-
-  display.setTextSize(1);
-  int detailY = statusY + 24;
-  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI) {
-    display.setCursor(10, detailY);
-    display.print(WIFI_SSID);
-  } else if (timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
-    display.setCursor(22, detailY);
-    display.print("Israel time");
-  } else if (timeSyncState == TIME_SYNC_FAILED) {
-    display.setCursor(12, detailY);
-    display.print("sync timeout");
-  }
-
-  display.display();
-  batteryMonitor.clearDisplayDirty();
-}
-
-void showTimer() {
-  setDisplayPower(true);
-  lastDisplayedSeconds = remainingSeconds;
-  lastDisplayedTimerColon = timerColonVisible();
-  displayBlank = false;
-
-  int minutes = remainingSeconds / 60;
-  int secs = remainingSeconds % 60;
-
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame("TIMER");
-  drawBatteryStatus();
-
-  display.setTextSize(3);
-  display.setCursor(18, 28);
-  printTwoDigits(minutes);
-  display.print(lastDisplayedTimerColon ? ":" : " ");
-  printTwoDigits(secs);
-
-  display.display();
-  batteryMonitor.clearDisplayDirty();
-}
-
-void showMusic() {
-  setDisplayPower(true);
-  lastDisplayedSeconds = remainingSeconds;
-  displayBlank = false;
-
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame("MUSIC");
-  drawBatteryStatus();
-
-  display.setTextSize(3);
-  display.setCursor(18, 28);
-  printTwoDigits(remainingSeconds / 60);
-  display.print(":");
-  printTwoDigits(remainingSeconds % 60);
-
-  display.display();
-  batteryMonitor.clearDisplayDirty();
-}
-
-void showClock(bool force, const char* label) {
-  bool colonVisible = clockSecond % 2 == 0;
-
-  if (!force &&
-      !displayBlank &&
-      clockHour == lastDisplayedClockHour &&
-      clockMinute == lastDisplayedClockMinute &&
-      colonVisible == lastDisplayedClockColon) {
-    return;
-  }
-
-  setDisplayPower(true);
-  displayBlank = false;
-  lastDisplayedSeconds = -1;
-  lastDisplayedClockHour = clockHour;
-  lastDisplayedClockMinute = clockMinute;
-  lastDisplayedClockColon = colonVisible;
-
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame(label);
-  drawBatteryStatus();
-
-  drawClockTime(clockHour, clockMinute, colonVisible, true, true);
-
-  display.display();
-  batteryMonitor.clearDisplayDirty();
+  displayManager.showClockSetting(
+    settingHour,
+    settingMinute,
+    mode == MODE_SET_HOUR,
+    mode == MODE_SET_MINUTE,
+    settingFieldVisible()
+  );
 }
 
 bool timerColonVisible() {
@@ -978,133 +477,53 @@ bool settingFieldVisible() {
   return ((millis() - settingBlinkStartedAtMs) / 500) % 2 == 0;
 }
 
-bool blinkVisible() {
-  return (millis() / 500) % 2 == 0;
-}
-
 void restartSettingBlink() {
   settingBlinkStartedAtMs = millis();
-  lastDisplayedSettingBlink = true;
 }
 
 void restartTimerBlink() {
   timerBlinkStartedAtMs = millis();
-  lastDisplayedTimerColon = true;
-}
-
-void printTwoDigits(int value) {
-  if (value < 10) {
-    display.print("0");
-  }
-  display.print(value);
-}
-
-void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute) {
-  uint8_t displayHour = USE_12_HOUR_CLOCK ? hour12Value(hour24) : hour24;
-  int hourDigits = USE_12_HOUR_CLOCK ? (displayHour < 10 ? 1 : 2) : 2;
-  int timeChars = hourDigits + 1 + 2;
-  int timeWidth = timeChars * 6 * CLOCK_TEXT_SIZE;
-  int amPmWidth = USE_12_HOUR_CLOCK ? 2 * 6 : 0;
-  int blockWidth = timeWidth + (USE_12_HOUR_CLOCK ? CLOCK_AM_PM_GAP + amPmWidth : 0);
-  int timeX = (SCREEN_WIDTH - blockWidth) / 2;
-  int timeY = CONTENT_TOP + (CONTENT_HEIGHT - CLOCK_TEXT_HEIGHT) / 2;
-  int amPmX = timeX + timeWidth + CLOCK_AM_PM_GAP;
-  int amPmY = timeY + CLOCK_AM_PM_Y_OFFSET;
-
-  display.setTextSize(CLOCK_TEXT_SIZE);
-  display.setCursor(timeX, timeY);
-  if (showHour) {
-    if (!USE_12_HOUR_CLOCK && displayHour < 10) {
-      display.print("0");
-    }
-    display.print(displayHour);
-  } else {
-    for (int i = 0; i < hourDigits; i++) {
-      display.print(" ");
-    }
-  }
-  display.print(colonVisible ? ":" : " ");
-  if (showMinute) {
-    printTwoDigits(minute);
-  } else {
-    display.print("  ");
-  }
-
-  if (USE_12_HOUR_CLOCK) {
-    display.setTextSize(1);
-    display.setCursor(amPmX, amPmY);
-    display.print(hour24 < 12 ? "AM" : "PM");
-  }
-}
-
-void printHour12(uint8_t hour24) {
-  uint8_t hour12 = hour24 % 12;
-  if (hour12 == 0) {
-    hour12 = 12;
-  }
-
-  display.print(hour12);
-}
-
-uint8_t hour12Value(uint8_t hour24) {
-  uint8_t hour12 = hour24 % 12;
-  return hour12 == 0 ? 12 : hour12;
+  displayManager.setTimerColonCache(true);
 }
 
 void enterReadyMode() {
   mode = MODE_READY;
   remainingSeconds = 0;
-  lastDisplayedSeconds = -1;
+  displayManager.resetTimerCache();
   showReadyForPirState(true, true);
 }
 
 void showReadyForPirState(bool force, bool forceDisplayOn) {
-  bool syncActive = timeSyncState == TIME_SYNC_CONNECTING_WIFI || timeSyncState == TIME_SYNC_WAITING_FOR_TIME;
-  bool displayShouldStayOn = forceDisplayOn || syncActive || pirMotionConfirmed || millis() < pirDisplayUntilMs;
+  bool syncActive = clockSync.isSyncActive();
+  bool displayShouldStayOn = forceDisplayOn || syncActive || pirMotion.motionConfirmed() || pirMotion.displayHoldActive();
 
   if (displayShouldStayOn) {
-    if (!clockHasValidTime) {
-      showSyncStatus(force);
+    if (!clockSync.hasValidTime()) {
+      displayManager.showSyncStatus(force, clockSync);
     } else {
-      showClock(force, "READY");
+      displayManager.showClock(force, "READY", clockSync.hour(), clockSync.minute(), clockSync.second());
     }
     return;
   }
 
-  blankDisplay();
-}
-
-void blankDisplay() {
-  if (displayBlank) {
-    batteryMonitor.clearDisplayDirty();
-    return;
-  }
-
-  display.clearDisplay();
-  display.display();
-  displayBlank = true;
-  batteryMonitor.clearDisplayDirty();
-  lastDisplayedSeconds = -1;
-  lastDisplayedClockHour = -1;
-  lastDisplayedClockMinute = -1;
+  displayManager.blank();
 }
 
 void handleLightSleep() {
-  if (!ENABLE_LIGHT_SLEEP || mode != MODE_READY || !displayBlank || alarmPlaying || piezoPlayer.isPlaying()) {
+  if (!ENABLE_LIGHT_SLEEP || mode != MODE_READY || !displayManager.isBlank() || alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
     return;
   }
 
-  if (timeSyncState == TIME_SYNC_CONNECTING_WIFI || timeSyncState == TIME_SYNC_WAITING_FOR_TIME) {
+  if (clockSync.isSyncActive()) {
     return;
   }
 
-  uint32_t now = millis();
-  if (now - pirDisplayUntilMs < LIGHT_SLEEP_AFTER_MS) {
+  if (!pirMotion.idleForAtLeast(LIGHT_SLEEP_AFTER_MS)) {
     return;
   }
 
-  if (pirMotionConfirmed) {
-    pirDisplayUntilMs = now + PIR_DISPLAY_HOLD_MS;
+  if (pirMotion.motionConfirmed()) {
+    pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
     showReadyForPirState(true, true);
     return;
   }
@@ -1116,8 +535,8 @@ void enterDeepSleep() {
   Serial.println("Entering deep sleep. PIR motion will reboot the timer.");
   Serial.flush();
 
-  disconnectAndDisableWifi();
-  setDisplayPower(false);
+  clockSync.disconnectAndDisableWifi();
+  displayManager.setPower(false);
   esp_deep_sleep_enable_gpio_wakeup(1ULL << PIR_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);
   esp_deep_sleep_start();
 }
@@ -1126,7 +545,7 @@ void enterLightSleep() {
   Serial.println("Entering light sleep. PIR motion or 5-minute timer wakes the timer.");
   Serial.flush();
 
-  setDisplayPower(false);
+  displayManager.setPower(false);
   gpio_wakeup_enable((gpio_num_t)PIR_PIN, GPIO_INTR_HIGH_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_timer_wakeup(LIGHT_SLEEP_TO_DEEP_SLEEP_US);
@@ -1139,82 +558,48 @@ void enterLightSleep() {
   Serial.begin(115200);
   esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
 
-  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER && digitalRead(PIR_PIN) != PIR_MOTION_STATE) {
+  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER && !pirMotion.rawMotionDetected()) {
     Serial.println("Light sleep lasted 5 minutes without motion. Escalating to deep sleep.");
     enterDeepSleep();
   }
 
   Serial.println("Woke from light sleep.");
 
-  lastPirState = digitalRead(PIR_PIN);
-  bool wokeForMotion = wakeCause == ESP_SLEEP_WAKEUP_GPIO && lastPirState == PIR_MOTION_STATE;
+  bool wokeForMotion = wakeCause == ESP_SLEEP_WAKEUP_GPIO && pirMotion.rawMotionDetected();
   if (wokeForMotion) {
-    pirDisplayUntilMs = millis() + PIR_DISPLAY_HOLD_MS;
+    pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
   }
 
   batteryMonitor.update(true);
   if (wokeForMotion) {
     showReadyForPirState(true, true);
   } else {
-    blankDisplay();
+    displayManager.blank();
   }
 }
 
 void startMusic(bool includeActivePiezo) {
-  currentSong = pickRandomSong();
-  if (currentSong == nullptr) {
-    Serial.println("No songs configured.");
+  if (!alarmPlayer.start(includeActivePiezo)) {
     enterReadyMode();
     return;
   }
 
   mode = MODE_MUSIC;
-  alarmPlaying = true;
-  activePiezoEnabled = includeActivePiezo;
-  soundIgnoredUntilSongMs = includeActivePiezo ? findLastActivePiezoEventMs() : 0;
-  activePiezoLedOn = false;
-  nextActivePiezoLedEvent = 0;
-  writeActivePiezoLed(false);
-  configurePiezoVoices(includeActivePiezo);
-  piezoPlayer.play(*currentSong, false);
   if (includeActivePiezo) {
-    showMusic();
+    displayManager.showMusic(remainingSeconds);
   } else {
-    showClock(true, "MUSIC");
-  }
-
-  Serial.println(includeActivePiezo ? "Playing random alarm song." : "Playing random song without active piezo.");
-  if (includeActivePiezo) {
-    Serial.print("Sound detector ignored until song position ");
-    Serial.print(soundIgnoredUntilSongMs);
-    Serial.println(" ms.");
+    displayManager.showClock(true, "MUSIC", clockSync.hour(), clockSync.minute(), clockSync.second());
   }
 }
 
 void stopMusic() {
-  if (!alarmPlaying && !piezoPlayer.isPlaying()) {
+  if (!alarmPlayer.isActive() && !alarmPlayer.isPlaying()) {
     enterReadyMode();
     return;
   }
 
-  piezoPlayer.stop();
-  alarmPlaying = false;
-  activePiezoEnabled = false;
-  soundIgnoredUntilSongMs = 0;
-  activePiezoLedOn = false;
-  nextActivePiezoLedEvent = 0;
-  digitalWrite(ACTIVE_PIEZO_PIN, LOW);
-  writeActivePiezoLed(false);
-  configurePiezoVoices(true);
+  alarmPlayer.stop();
   enterReadyMode();
-}
-
-const PiezoSong* pickRandomSong() {
-  if (TIMER_SONG_COUNT == 0) {
-    return nullptr;
-  }
-
-  return TIMER_SONGS[random(TIMER_SONG_COUNT)];
 }
 
 void updateMusic() {
@@ -1222,77 +607,23 @@ void updateMusic() {
     return;
   }
 
-  piezoPlayer.update();
-
-  if (!piezoPlayer.isPlaying()) {
+  if (!alarmPlayer.update()) {
     stopMusic();
-    return;
-  }
-
-  if (activePiezoEnabled) {
-    updateActivePiezoLed(piezoPlayer.positionMs());
   }
 }
 
 void updateSensors() {
-  uint32_t now = millis();
-  int pirReading = digitalRead(PIR_PIN);
-
-  if ((int32_t)(now - pirWarmupUntilMs) >= 0) {
-    if (pirReading != lastPirReading) {
-      lastPirReading = pirReading;
-      if (pirReading == PIR_MOTION_STATE) {
-        pirHighStartedAtMs = now;
-      }
-    }
-
-    bool pirStateChanged = false;
-    int confirmedPirState = pirMotionConfirmed ? PIR_MOTION_STATE : LOW;
-
-    if (pirReading == PIR_MOTION_STATE) {
-      if (!pirMotionConfirmed && (int32_t)(now - pirHighStartedAtMs) >= (int32_t)PIR_CONFIRM_MS) {
-        pirMotionConfirmed = true;
-        confirmedPirState = PIR_MOTION_STATE;
-        pirStateChanged = true;
-      }
-    } else if (pirMotionConfirmed) {
-      pirMotionConfirmed = false;
-      confirmedPirState = LOW;
-      pirStateChanged = true;
-    }
-
-    if (pirMotionConfirmed) {
-      pirDisplayUntilMs = now + PIR_DISPLAY_HOLD_MS;
-    }
-
-    if (pirStateChanged) {
-      lastPirState = confirmedPirState;
-      printPirState(confirmedPirState);
-      if (mode == MODE_READY) {
-        showReadyForPirState(true, true);
-      }
-    }
+  if (pirMotion.update() && mode == MODE_READY) {
+    showReadyForPirState(true, true);
   }
 
-  int soundState = digitalRead(SOUND_PIN);
-  bool soundActivation = false;
-
-  if (soundState != lastSoundState) {
-    if (soundState == SOUND_DETECTED_STATE) {
-      soundActivation = recordSoundPulse();
-    }
-
-    lastSoundState = soundState;
-    if (LOG_RAW_SOUND_EDGES) {
-      printSoundState(soundState);
-    }
-  }
+  bool soundActivation = soundTrigger.update();
 
   if (mode != MODE_MUSIC) {
     return;
   }
 
-  if (activePiezoEnabled && piezoPlayer.positionMs() <= soundIgnoredUntilSongMs) {
+  if (alarmPlayer.shouldIgnoreSound()) {
     return;
   }
 
@@ -1302,100 +633,16 @@ void updateSensors() {
   }
 }
 
-uint32_t findLastActivePiezoEventMs() {
-  if (currentSong == nullptr) {
-    return 0;
-  }
-
-  uint32_t lastActiveEventMs = 0;
-
-  for (uint32_t i = 0; i < currentSong->eventCount; i++) {
-    PiezoEvent event;
-    memcpy_P(&event, &currentSong->events[i], sizeof(event));
-
-    if (event.voice == ACTIVE_PIEZO_VOICE) {
-      lastActiveEventMs = event.timeMs;
-    }
-  }
-
-  return lastActiveEventMs;
-}
-
-bool recordSoundPulse() {
-  uint32_t now = millis();
-
-  if (now - lastSoundActivationMs < SOUND_TRIGGER_COOLDOWN_MS) {
-    return false;
-  }
-
-  if (soundPulseCount == 0 || now - firstSoundPulseMs > SOUND_TRIGGER_WINDOW_MS) {
-    soundPulseCount = 1;
-    firstSoundPulseMs = now;
-    return false;
-  }
-
-  soundPulseCount++;
-
-  if (soundPulseCount < SOUND_TRIGGER_MIN_PULSES) {
-    return false;
-  }
-
-  soundPulseCount = 0;
-  firstSoundPulseMs = 0;
-  lastSoundActivationMs = now;
-  return true;
-}
-
 void testPiezoOutputs() {
-  Serial.print("Testing main passive piezo on GPIO ");
-  Serial.print(MAIN_PIEZO_PIN);
-  Serial.println(".");
   if (mode == MODE_MUSIC) {
     stopMusic();
   }
 
-  ledcWriteTone(MAIN_PIEZO_PIN, PIEZO_SELF_TEST_TONE_HZ);
-  delay(PIEZO_SELF_TEST_MS);
-  ledcWriteTone(MAIN_PIEZO_PIN, 0);
-  delay(150);
-
-  Serial.print("Testing second passive piezo on GPIO ");
-  Serial.print(HARMONY_PIEZO_PIN);
-  Serial.println(".");
-  ledcWriteTone(HARMONY_PIEZO_PIN, PIEZO_SELF_TEST_TONE_HZ);
-  delay(PIEZO_SELF_TEST_MS);
-  ledcWriteTone(HARMONY_PIEZO_PIN, 0);
-  delay(150);
-
-  Serial.print("Testing active piezo and LED on GPIO ");
-  Serial.print(ACTIVE_PIEZO_PIN);
-  Serial.print(" / GPIO ");
-  Serial.print(ACTIVE_PIEZO_LED_PIN);
-  Serial.println(".");
-  digitalWrite(ACTIVE_PIEZO_PIN, HIGH);
-  writeActivePiezoLed(true);
-  delay(PIEZO_SELF_TEST_MS);
-  digitalWrite(ACTIVE_PIEZO_PIN, LOW);
-  writeActivePiezoLed(false);
-  configurePiezoVoices(true);
-
-  Serial.println("Piezo output test done.");
-}
-
-void printPirState(int state) {
-  Serial.print(millis());
-  Serial.print(" ms PIR: ");
-  Serial.println(state == PIR_MOTION_STATE ? "MOTION detected" : "No motion");
-}
-
-void printSoundState(int state) {
-  Serial.print(millis());
-  Serial.print(" ms sound: ");
-  Serial.println(state == SOUND_DETECTED_STATE ? "Sound detected" : "Quiet");
+  alarmPlayer.testOutputs();
 }
 
 void printClockToSerial() {
-  uint8_t hour12 = clockHour % 12;
+  uint8_t hour12 = clockSync.hour() % 12;
   if (hour12 == 0) {
     hour12 = 12;
   }
@@ -1405,34 +652,9 @@ void printClockToSerial() {
   }
   Serial.print(hour12);
   Serial.print(":");
-  if (clockMinute < 10) {
+  if (clockSync.minute() < 10) {
     Serial.print("0");
   }
-  Serial.print(clockMinute);
-  Serial.println(clockHour < 12 ? " AM" : " PM");
-}
-
-void updateActivePiezoLed(uint32_t songPositionMs) {
-  if (currentSong == nullptr) {
-    return;
-  }
-
-  while (nextActivePiezoLedEvent < currentSong->eventCount) {
-    PiezoEvent event;
-    memcpy_P(&event, &currentSong->events[nextActivePiezoLedEvent], sizeof(event));
-
-    if (event.timeMs > songPositionMs) {
-      break;
-    }
-
-    if (event.voice == ACTIVE_PIEZO_VOICE) {
-      bool ledOn = event.frequency > 0;
-      if (ledOn != activePiezoLedOn) {
-        activePiezoLedOn = ledOn;
-        writeActivePiezoLed(activePiezoLedOn);
-      }
-    }
-
-    nextActivePiezoLedEvent++;
-  }
+  Serial.print(clockSync.minute());
+  Serial.println(clockSync.hour() < 12 ? " AM" : " PM");
 }
