@@ -130,12 +130,9 @@ AlarmPlayer alarmPlayer(
 );
 SleepManager sleepManager(
   PIR_PIN,
-  PIR_DISPLAY_HOLD_MS,
-  LIGHT_SLEEP_TO_DEEP_SLEEP_US,
   displayManager,
   clockSync,
-  pirMotion,
-  batteryMonitor
+  pirMotion
 );
 TimerController timerController(
   STEP_SECONDS,
@@ -188,6 +185,7 @@ void loop() {
   handleSerialCommands();
   bool syncDisplayChanged = clockSync.updateSync();
   if (syncDisplayChanged && mode == MODE_READY) {
+    pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
     displayManager.resetClockCache();
     showReadyForPirState(true, true);
   }
@@ -199,7 +197,7 @@ void loop() {
   updateAlarmPlayback();
   batteryMonitor.update();
   updateDisplayIfNeeded();
-  handleLightSleep();
+  handleDeepSleep();
 }
 
 void handleSerialCommands() {
@@ -381,8 +379,8 @@ void showReadyForPirState(bool force, bool forceDisplayOn) {
   displayManager.blank();
 }
 
-void handleLightSleep() {
-  if (!ENABLE_LIGHT_SLEEP || mode != MODE_READY || !displayManager.isBlank() || alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
+void handleDeepSleep() {
+  if (!ENABLE_DEEP_SLEEP || mode != MODE_READY || !displayManager.isBlank() || alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
     return;
   }
 
@@ -390,7 +388,7 @@ void handleLightSleep() {
     return;
   }
 
-  if (!pirMotion.idleForAtLeast(LIGHT_SLEEP_AFTER_MS)) {
+  if (!pirMotion.idleForAtLeast(DEEP_SLEEP_AFTER_MS)) {
     return;
   }
 
@@ -400,12 +398,7 @@ void handleLightSleep() {
     return;
   }
 
-  LightSleepResult sleepResult = sleepManager.enterLightSleep();
-  if (sleepResult.wokeForMotion) {
-    showReadyForPirState(true, true);
-  } else {
-    displayManager.blank();
-  }
+  sleepManager.enterDeepSleep();
 }
 
 void startAlarmPlayback(bool includeActivePiezo) {
