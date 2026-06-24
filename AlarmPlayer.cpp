@@ -2,6 +2,8 @@
 
 #include "songs/Songs.h"
 
+#include <esp_system.h>
+
 AlarmPlayer::AlarmPlayer(
   uint8_t activePiezoPin,
   uint8_t activePiezoLedPin,
@@ -175,7 +177,7 @@ const PiezoSong* AlarmPlayer::pickRandomSong() const {
     return nullptr;
   }
 
-  return TIMER_SONGS[random(TIMER_SONG_COUNT)];
+  return TIMER_SONGS[esp_random() % TIMER_SONG_COUNT];
 }
 
 uint32_t AlarmPlayer::findLastActivePiezoEventMs() const {

@@ -111,7 +111,7 @@ void DisplayManager::showSyncStatus(bool force, const ClockSync& clockSync) {
   display_.clearDisplay();
   display_.setTextColor(SSD1306_WHITE);
 
-  drawScreenFrame("SYNC");
+  drawScreenFrame("READY");
   drawBatteryStatus();
 
   display_.setTextSize(2);
@@ -148,7 +148,7 @@ void DisplayManager::showAlarmCountdown(int remainingSeconds) {
 }
 
 void DisplayManager::showLoadingAnimationFrame(uint8_t animationIndex, uint8_t frameIndex) {
-  drawAnimationScreen("SYNC", AnimationAssets::loadingAnimation(animationIndex), frameIndex);
+  drawAnimationScreen("READY", AnimationAssets::loadingAnimation(animationIndex), frameIndex);
 }
 
 void DisplayManager::showSoundAnimationFrame(uint8_t frameIndex) {

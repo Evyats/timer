@@ -1,5 +1,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <esp_system.h>
 #include <Wire.h>
 
 #include "AlarmPlayer.h"
@@ -154,7 +155,6 @@ uint32_t nextLoadingAnimationFrameMs = 0;
 
 void setup() {
   Serial.begin(115200);
-  randomSeed(micros());
 
   inputController.begin();
   pirMotion.begin();
@@ -368,7 +368,7 @@ void renderAlarmPlayback(bool force) {
 }
 
 void selectLoadingAnimation() {
-  loadingAnimationIndex = random(AnimationAssets::loadingAnimationCount());
+  loadingAnimationIndex = esp_random() % AnimationAssets::loadingAnimationCount();
   loadingAnimationFrame = 0;
   nextLoadingAnimationFrameMs = 0;
 }
