@@ -9,6 +9,8 @@ const int CONTENT_TOP = HEADER_HEIGHT + 1;
 const int CONTENT_HEIGHT = SCREEN_HEIGHT - HEADER_HEIGHT - 1;
 const int CLOCK_TEXT_SIZE = 3;
 const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
+const int COUNTDOWN_TEXT_SIZE = 3;
+const int COUNTDOWN_TEXT_HEIGHT = 8 * COUNTDOWN_TEXT_SIZE;
 const int CLOCK_AM_PM_GAP = 6;
 const int CLOCK_AM_PM_Y_OFFSET = 8;
 const bool SHOW_SECTION_BORDERS = false;
@@ -138,49 +140,19 @@ void DisplayManager::showSyncStatus(bool force, const ClockSync& clockSync) {
 }
 
 void DisplayManager::showTimer(int remainingSeconds, bool colonVisible) {
-  setPower(true);
-  lastDisplayedSeconds_ = remainingSeconds;
-  lastDisplayedTimerColon_ = colonVisible;
-  displayBlank_ = false;
-
-  int minutes = remainingSeconds / 60;
-  int secs = remainingSeconds % 60;
-
-  display_.clearDisplay();
-  display_.setTextColor(SSD1306_WHITE);
-
-  drawScreenFrame("TIMER");
-  drawBatteryStatus();
-
-  display_.setTextSize(3);
-  display_.setCursor(18, 28);
-  printTwoDigits(minutes);
-  display_.print(colonVisible ? ":" : " ");
-  printTwoDigits(secs);
-
-  display_.display();
-  batteryMonitor_.clearDisplayDirty();
+  drawCountdownScreen("TIMER", remainingSeconds, colonVisible);
 }
 
 void DisplayManager::showAlarmCountdown(int remainingSeconds) {
-  setPower(true);
-  lastDisplayedSeconds_ = remainingSeconds;
-  displayBlank_ = false;
+  drawCountdownScreen("ALARM", remainingSeconds, true);
+}
 
-  display_.clearDisplay();
-  display_.setTextColor(SSD1306_WHITE);
+void DisplayManager::showLoadingAnimationFrame(uint8_t animationIndex, uint8_t frameIndex) {
+  drawAnimationScreen("SYNC", AnimationAssets::loadingAnimation(animationIndex), frameIndex);
+}
 
-  drawScreenFrame("ALARM");
-  drawBatteryStatus();
-
-  display_.setTextSize(3);
-  display_.setCursor(18, 28);
-  printTwoDigits(remainingSeconds / 60);
-  display_.print(":");
-  printTwoDigits(remainingSeconds % 60);
-
-  display_.display();
-  batteryMonitor_.clearDisplayDirty();
+void DisplayManager::showSoundAnimationFrame(uint8_t frameIndex) {
+  drawAnimationScreen("ALARM", AnimationAssets::soundAnimation(), frameIndex);
 }
 
 void DisplayManager::showClock(bool force, const char* label, uint8_t hour, uint8_t minute, uint8_t second) {
@@ -208,6 +180,27 @@ void DisplayManager::showClock(bool force, const char* label, uint8_t hour, uint
   drawBatteryStatus();
 
   drawClockTime(hour, minute, colonVisible, true, true);
+
+  display_.display();
+  batteryMonitor_.clearDisplayDirty();
+}
+
+void DisplayManager::drawAnimationScreen(const char* stateLabel, const AnimationClip& clip, uint8_t frameIndex) {
+  setPower(true);
+  displayBlank_ = false;
+  lastDisplayedSeconds_ = -1;
+  lastDisplayedClockHour_ = -1;
+  lastDisplayedClockMinute_ = -1;
+
+  display_.clearDisplay();
+  display_.setTextColor(SSD1306_WHITE);
+
+  drawScreenFrame(stateLabel);
+  drawBatteryStatus();
+
+  int frameX = (SCREEN_WIDTH - clip.width) / 2;
+  int frameY = CONTENT_TOP + (CONTENT_HEIGHT - clip.height) / 2;
+  AnimationAssets::drawFrame(display_, clip, frameIndex, frameX, frameY);
 
   display_.display();
   batteryMonitor_.clearDisplayDirty();
@@ -276,6 +269,32 @@ void DisplayManager::drawBatteryStatus() {
   display_.drawRect(batteryX, batteryY, batteryWidth, batteryHeight, SSD1306_WHITE);
   display_.fillRect(batteryX - terminalWidth, terminalY, terminalWidth, terminalHeight, SSD1306_WHITE);
   display_.fillRect(batteryX + batteryWidth - 2 - fillWidth, batteryY + 2, fillWidth, batteryHeight - 4, SSD1306_WHITE);
+}
+
+void DisplayManager::drawCountdownScreen(const char* stateLabel, int remainingSeconds, bool colonVisible) {
+  setPower(true);
+  lastDisplayedSeconds_ = remainingSeconds;
+  lastDisplayedTimerColon_ = colonVisible;
+  displayBlank_ = false;
+
+  display_.clearDisplay();
+  display_.setTextColor(SSD1306_WHITE);
+
+  drawScreenFrame(stateLabel);
+  drawBatteryStatus();
+
+  int countdownWidth = 5 * 6 * COUNTDOWN_TEXT_SIZE;
+  int countdownX = (SCREEN_WIDTH - countdownWidth) / 2;
+  int countdownY = CONTENT_TOP + (CONTENT_HEIGHT - COUNTDOWN_TEXT_HEIGHT) / 2;
+
+  display_.setTextSize(COUNTDOWN_TEXT_SIZE);
+  display_.setCursor(countdownX, countdownY);
+  printTwoDigits(remainingSeconds / 60);
+  display_.print(colonVisible ? ":" : " ");
+  printTwoDigits(remainingSeconds % 60);
+
+  display_.display();
+  batteryMonitor_.clearDisplayDirty();
 }
 
 void DisplayManager::printTwoDigits(int value) {

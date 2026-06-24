@@ -1,9 +1,19 @@
 #include "ClockSync.h"
 
+#include "esp_sntp.h"
 #include <time.h>
 
 const uint32_t WIFI_CONNECT_RETRY_MS = 12000;
 const uint32_t NTP_WAIT_LOG_INTERVAL_MS = 5000;
+const time_t VALID_TIME_THRESHOLD = 1700000000;
+
+namespace {
+volatile bool ntpTimeSyncReceived = false;
+
+void onNtpTimeSync(struct timeval*) {
+  ntpTimeSyncReceived = true;
+}
+}
 
 ClockSync::ClockSync(
   const char* wifiSsid,
@@ -33,13 +43,15 @@ ClockSync::ClockSync(
     lastNtpWaitLogMs_(0),
     connectAttemptStartedAtMs_(0),
     connectAttempt_(0),
-    lastLoggedWifiStatus_(WL_IDLE_STATUS) {
+    lastLoggedWifiStatus_(WL_IDLE_STATUS),
+    loggedExistingSystemTime_(false) {
 }
 
 void ClockSync::begin() {
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
+  sntp_set_time_sync_notification_cb(onNtpTimeSync);
   lastClockTickMs_ = millis();
 }
 
@@ -51,6 +63,8 @@ void ClockSync::startSync() {
   syncState_ = TIME_SYNC_CONNECTING_WIFI;
   syncStartedAtMs_ = millis();
   connectAttempt_ = 0;
+  loggedExistingSystemTime_ = false;
+  ntpTimeSyncReceived = false;
   beginConnectionAttempt();
 }
 
@@ -109,11 +123,16 @@ bool ClockSync::updateSync() {
     logWifiStatus(wifiStatus);
   }
 
-  time_t nowSeconds = time(nullptr);
-  if (nowSeconds > 1700000000) {
+  if (ntpTimeSyncReceived) {
     applySyncedClock();
     finishSync(true);
     return true;
+  }
+
+  time_t nowSeconds = time(nullptr);
+  if (!loggedExistingSystemTime_ && nowSeconds > VALID_TIME_THRESHOLD) {
+    loggedExistingSystemTime_ = true;
+    Serial.println("System time is already valid-looking; waiting for fresh NTP sync event.");
   }
 
   if (now - ntpStartedAtMs_ >= ntpTimeoutMs_) {

@@ -12,6 +12,7 @@
 #include "SoundTrigger.h"
 #include "TimerConfig.h"
 #include "TimerController.h"
+#include "AnimationAssets.h"
 #include "wifi_secrets.h"
 
 /*
@@ -74,6 +75,8 @@ enum DeviceMode {
 };
 
 void showReadyForPirState(bool force, bool forceDisplayOn = false);
+void selectLoadingAnimation();
+void renderLoadingAnimation(bool force);
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 BatteryMonitor batteryMonitor(
@@ -143,6 +146,11 @@ TimerController timerController(
 );
 
 DeviceMode mode = MODE_SET_HOUR;
+uint8_t soundAnimationFrame = 0;
+uint32_t nextSoundAnimationFrameMs = 0;
+uint8_t loadingAnimationIndex = 0;
+uint8_t loadingAnimationFrame = 0;
+uint32_t nextLoadingAnimationFrameMs = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -175,6 +183,7 @@ void setup() {
   Serial.println(sleepManager.wakeupCauseCode());
   Serial.println("PIR warmup running in background.");
   mode = MODE_READY;
+  selectLoadingAnimation();
   clockSync.startSync();
   showReadyForPirState(true, true);
 
@@ -347,14 +356,33 @@ void renderClockSetting() {
 }
 
 void renderAlarmPlayback(bool force) {
-  if (alarmPlayer.activePiezoEnabled()) {
-    if (force) {
-      displayManager.showAlarmCountdown(timerController.remainingSeconds());
-    }
+  uint32_t now = millis();
+  if (!force && (int32_t)(now - nextSoundAnimationFrameMs) < 0) {
     return;
   }
 
-  displayManager.showClock(force, "ALARM", clockSync.hour(), clockSync.minute(), clockSync.second());
+  displayManager.showSoundAnimationFrame(soundAnimationFrame);
+  const AnimationClip& clip = AnimationAssets::soundAnimation();
+  soundAnimationFrame = (soundAnimationFrame + 1) % clip.frameCount;
+  nextSoundAnimationFrameMs = now + clip.frameDelayMs;
+}
+
+void selectLoadingAnimation() {
+  loadingAnimationIndex = random(AnimationAssets::loadingAnimationCount());
+  loadingAnimationFrame = 0;
+  nextLoadingAnimationFrameMs = 0;
+}
+
+void renderLoadingAnimation(bool force) {
+  uint32_t now = millis();
+  if (!force && (int32_t)(now - nextLoadingAnimationFrameMs) < 0) {
+    return;
+  }
+
+  const AnimationClip& clip = AnimationAssets::loadingAnimation(loadingAnimationIndex);
+  displayManager.showLoadingAnimationFrame(loadingAnimationIndex, loadingAnimationFrame);
+  loadingAnimationFrame = (loadingAnimationFrame + 1) % clip.frameCount;
+  nextLoadingAnimationFrameMs = now + clip.frameDelayMs;
 }
 
 void enterReadyMode() {
@@ -370,7 +398,11 @@ void showReadyForPirState(bool force, bool forceDisplayOn) {
 
   if (displayShouldStayOn) {
     if (!clockSync.hasValidTime()) {
-      displayManager.showSyncStatus(force, clockSync);
+      if (syncActive) {
+        renderLoadingAnimation(force);
+      } else {
+        displayManager.showSyncStatus(force, clockSync);
+      }
     } else {
       displayManager.showClock(force, "READY", clockSync.hour(), clockSync.minute(), clockSync.second());
     }
@@ -409,6 +441,8 @@ void startAlarmPlayback(bool includeActivePiezo) {
   }
 
   mode = MODE_ALARM_PLAYING;
+  soundAnimationFrame = 0;
+  nextSoundAnimationFrameMs = 0;
   renderAlarmPlayback(true);
 }
 

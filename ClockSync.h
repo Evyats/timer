@@ -70,6 +70,7 @@ private:
   uint32_t connectAttemptStartedAtMs_;
   uint8_t connectAttempt_;
   wl_status_t lastLoggedWifiStatus_;
+  bool loggedExistingSystemTime_;
 };
 
 #endif

@@ -4,6 +4,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
 
+#include "AnimationAssets.h"
 #include "BatteryMonitor.h"
 #include "ClockSync.h"
 
@@ -20,6 +21,8 @@ public:
   void showSyncStatus(bool force, const ClockSync& clockSync);
   void showTimer(int remainingSeconds, bool colonVisible);
   void showAlarmCountdown(int remainingSeconds);
+  void showLoadingAnimationFrame(uint8_t animationIndex, uint8_t frameIndex);
+  void showSoundAnimationFrame(uint8_t frameIndex);
   void showClock(bool force, const char* label, uint8_t hour, uint8_t minute, uint8_t second);
 
   bool timerNeedsUpdate(int remainingSeconds, bool colonVisible) const;
@@ -31,6 +34,8 @@ public:
 private:
   void drawScreenFrame(const char* stateLabel);
   void drawBatteryStatus();
+  void drawAnimationScreen(const char* stateLabel, const AnimationClip& clip, uint8_t frameIndex);
+  void drawCountdownScreen(const char* stateLabel, int remainingSeconds, bool colonVisible);
   void printTwoDigits(int value);
   void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute);
   uint8_t hour12Value(uint8_t hour24) const;
