@@ -17,6 +17,7 @@ public:
   void begin();
   int readEncoderStep();
   bool buttonPressed();
+  bool buttonDown() const;
 
 private:
   void printEncoderRawState(int s1, int s2, int state);

@@ -25,6 +25,8 @@ public:
   bool isPlaying() const;
   bool activePiezoEnabled() const;
   bool shouldIgnoreSound() const;
+  void setMusicEnabled(bool enabled);
+  bool musicEnabled() const;
   void testOutputs();
 
 private:
@@ -46,7 +48,10 @@ private:
   PiezoPlayer player_;
   PiezoVoice voicesWithActive_[3];
   PiezoVoice voicesPassiveOnly_[3];
+  PiezoVoice voicesActiveOnly_[3];
+  PiezoVoice voicesMuted_[3];
   const PiezoSong* currentSong_;
+  bool musicEnabled_;
   bool active_;
   bool activePiezoEnabled_;
   bool activePiezoLedOn_;

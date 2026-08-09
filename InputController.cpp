@@ -114,6 +114,10 @@ bool InputController::buttonPressed() {
   return true;
 }
 
+bool InputController::buttonDown() const {
+  return stableButtonState_ == LOW;
+}
+
 void InputController::printEncoderRawState(int s1, int s2, int state) {
   if (!logRawStates_) {
     return;

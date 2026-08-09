@@ -1,11 +1,12 @@
 #include "TimerController.h"
 
-TimerController::TimerController(int stepSeconds, int maxSeconds, uint32_t startDelayMs, uint32_t colonBlinkDelayMs)
-  : stepSeconds_(stepSeconds),
-    maxSeconds_(maxSeconds),
+TimerController::TimerController(int maxSeconds, uint32_t startDelayMs, uint32_t colonBlinkDelayMs)
+  : maxSeconds_(maxSeconds),
     startDelayMs_(startDelayMs),
     colonBlinkDelayMs_(colonBlinkDelayMs),
     remainingSeconds_(0),
+    countdownStartSeconds_(0),
+    countdownRunning_(false),
     nextTimerTickMs_(0),
     timerBlinkStartedAtMs_(0),
     settingHour_(0),
@@ -35,8 +36,8 @@ bool TimerController::settingFieldVisible() const {
   return ((millis() - settingBlinkStartedAtMs_) / 500) % 2 == 0;
 }
 
-void TimerController::adjustTimer(int direction) {
-  remainingSeconds_ += direction * stepSeconds_;
+void TimerController::adjustTimer(int direction, int stepSeconds) {
+  remainingSeconds_ += direction * stepSeconds;
 
   if (remainingSeconds_ < 0) {
     remainingSeconds_ = 0;
@@ -48,6 +49,8 @@ void TimerController::adjustTimer(int direction) {
 
   if (remainingSeconds_ > 0) {
     uint32_t now = millis();
+    countdownStartSeconds_ = remainingSeconds_;
+    countdownRunning_ = false;
     nextTimerTickMs_ = now + startDelayMs_;
     timerBlinkStartedAtMs_ = now + colonBlinkDelayMs_;
   }
@@ -55,6 +58,21 @@ void TimerController::adjustTimer(int direction) {
 
 bool TimerController::updateCountdown() {
   uint32_t now = millis();
+
+  if (remainingSeconds_ <= 0) {
+    return true;
+  }
+
+  if (!countdownRunning_) {
+    if ((int32_t)(now - nextTimerTickMs_) < 0) {
+      return false;
+    }
+
+    countdownRunning_ = true;
+    nextTimerTickMs_ = now + 1000;
+    restartTimerBlink();
+    return false;
+  }
 
   while ((int32_t)(now - nextTimerTickMs_) >= 0 && remainingSeconds_ > 0) {
     nextTimerTickMs_ += 1000;
@@ -67,6 +85,8 @@ bool TimerController::updateCountdown() {
 
 void TimerController::resetTimer() {
   remainingSeconds_ = 0;
+  countdownStartSeconds_ = 0;
+  countdownRunning_ = false;
 }
 
 void TimerController::restartTimerBlink() {
@@ -81,6 +101,10 @@ bool TimerController::timerColonVisible() const {
   return ((millis() - timerBlinkStartedAtMs_) / 500) % 2 == 0;
 }
 
+bool TimerController::countdownRunning() const {
+  return countdownRunning_;
+}
+
 uint8_t TimerController::settingHour() const {
   return settingHour_;
 }
@@ -91,6 +115,10 @@ uint8_t TimerController::settingMinute() const {
 
 int TimerController::remainingSeconds() const {
   return remainingSeconds_;
+}
+
+int TimerController::countdownStartSeconds() const {
+  return countdownStartSeconds_;
 }
 
 int TimerController::wrapValue(int value, int minimumValue, int maximumValue) const {

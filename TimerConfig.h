@@ -14,27 +14,29 @@ const int OLED_ADDRESS = 0x3C;
 // const int ENCODER_S1_PIN = 32;
 // const int ENCODER_S2_PIN = 33;
 // const int ENCODER_BUTTON_PIN = 13;
-// const int PIR_PIN = 18;
+// const int PIR_PIN = 35;  // Input-only RTC GPIO; supports deep-sleep wake.
 // const int SOUND_PIN = 19;
 // const uint8_t MAIN_PIEZO_PIN = 25;
 // const uint8_t HARMONY_PIEZO_PIN = 26;
 // const uint8_t ACTIVE_PIEZO_PIN = 27;
 // const uint8_t ACTIVE_PIEZO_LED_PIN = 14;
 
-//// ESP32-C3 Super Mini pin assignment:
-// GPIO2, GPIO8, and GPIO9 are C3 strapping pins. GPIO8 is currently being tested
-// for encoder S1.
-const int SDA_PIN = 4;
-const int SCL_PIN = 5;
-const int BATTERY_ADC_PIN = 0;  // ADC1 pin.
-const int ENCODER_S1_PIN = 1;
-const int ENCODER_S2_PIN = 10;
-const int ENCODER_BUTTON_PIN = 6;
-const int PIR_PIN = 3;  // Deep-sleep wake-capable RTC GPIO.
-const int SOUND_PIN = 21;
-const uint8_t MAIN_PIEZO_PIN = 7;
-const uint8_t HARMONY_PIEZO_PIN = 8;
-const uint8_t ACTIVE_PIEZO_PIN = 20;
+//// ESP32-S3 Super Mini pin assignment:
+// Arduino IDE board: "ESP32S3 Dev Module"; enable "USB CDC On Boot".
+// GPIO19/20 are left free for native USB. GPIO0, GPIO3, GPIO45, and GPIO46 are
+// avoided because they are strapping pins. GPIO48 is left free for the onboard
+// addressable RGB LED found on the common S3 Super Mini board.
+const int SDA_PIN = 8;
+const int SCL_PIN = 9;
+const int BATTERY_ADC_PIN = 4;  // ADC1_CH3.
+const int ENCODER_S1_PIN = 13;
+const int ENCODER_S2_PIN = 1;
+const int ENCODER_BUTTON_PIN = 10;
+const int PIR_PIN = 12;  // RTC GPIO; supports deep-sleep GPIO wake.
+const int SOUND_PIN = 11;
+const uint8_t MAIN_PIEZO_PIN = 5;
+const uint8_t HARMONY_PIEZO_PIN = 6;
+const uint8_t ACTIVE_PIEZO_PIN = 2;
 const uint8_t ACTIVE_PIEZO_LED_PIN = ACTIVE_PIEZO_PIN;
 
 //// Seeed Studio XIAO ESP32C3 pin assignment:
@@ -54,20 +56,31 @@ const uint8_t ACTIVE_PIEZO_LED_PIN = ACTIVE_PIEZO_PIN;
 
 const bool REVERSE_ENCODER_DIRECTION = true;
 const uint32_t BUTTON_DEBOUNCE_MS = 35;
+const uint32_t SETTINGS_LONG_PRESS_MS = 1200;
 const bool LOG_ENCODER_RAW_STATES = true;
 
 const int PIR_MOTION_STATE = HIGH;
 const int SOUND_DETECTED_STATE = LOW;
 const unsigned long PIR_WARMUP_MS = 3000;
 const uint32_t PIR_CONFIRM_MS = 200;
-const uint32_t PIR_DISPLAY_HOLD_MS = 4000;
-const uint32_t BUTTON_DISPLAY_HOLD_MS = PIR_DISPLAY_HOLD_MS;
-const uint32_t DEEP_SLEEP_AFTER_MS = 3UL * 60UL * 1000UL;
+
+// Power/time behavior: these are the main values to tweak while testing.
+const uint32_t DISPLAY_HOLD_AFTER_ACTIVITY_MS = 4UL * 1000UL;
+const uint32_t DEEP_SLEEP_AFTER_BLANK_MS = 60UL * 1000UL;
+const uint32_t WIFI_RESYNC_AFTER_SECONDS = 60UL * 60UL;
+
+const uint32_t PIR_DISPLAY_HOLD_MS = DISPLAY_HOLD_AFTER_ACTIVITY_MS;
+const uint32_t BUTTON_DISPLAY_HOLD_MS = DISPLAY_HOLD_AFTER_ACTIVITY_MS;
 const bool ENABLE_DEEP_SLEEP = true;
+const uint8_t SLEEP_BLINK_COUNT = 2;
+const uint8_t SLEEP_BLINK_BRIGHTNESS = 4;
+const uint32_t SLEEP_BLINK_ON_MS = 70;
+const uint32_t SLEEP_BLINK_OFF_MS = 90;
+const uint8_t ONBOARD_RGB_LED_PIN = 48;
 const uint8_t SOUND_TRIGGER_MIN_PULSES = 3;
 const uint32_t SOUND_TRIGGER_WINDOW_MS = 250;
 const uint32_t SOUND_TRIGGER_COOLDOWN_MS = 600;
-const bool LOG_RAW_SOUND_EDGES = false;
+const bool LOG_RAW_SOUND_EDGES = true;
 
 const uint8_t ACTIVE_PIEZO_VOICE = 0;
 const int PIEZO_SELF_TEST_TONE_HZ = 880;
@@ -84,11 +97,9 @@ const char* const NTP_SERVER_2 = "time.google.com";
 const char* const NTP_SERVER_3 = "time.cloudflare.com";
 
 const int STEP_SECONDS = 60;
+const int DEBUG_STEP_SECONDS = 10;
 const int MAX_SECONDS = 99 * 60 + 59;
-const int BATTERY_ADC_SAMPLES = 32;
-const int BATTERY_PERCENT_SMOOTHING_WINDOW = 8;
-const uint32_t BATTERY_UPDATE_MS = 3000;
-const uint32_t BATTERY_SAMPLE_INTERVAL_MS = 2;
+const uint32_t BATTERY_UPDATE_MS = 1000;
 const float BATTERY_R1_OHMS = 100000.0;
 const float BATTERY_R2_OHMS = 100000.0;
 

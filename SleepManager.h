@@ -11,16 +11,18 @@ class SleepManager {
 public:
   SleepManager(
     int pirPin,
+    int buttonPin,
     DisplayManager& displayManager,
     ClockSync& clockSync,
     PirMotion& pirMotion
   );
 
   int wakeupCauseCode() const;
-  void enterDeepSleep();
+  void enterDeepSleep(bool pirWakeEnabled);
 
 private:
   int pirPin_;
+  int buttonPin_;
   DisplayManager& displayManager_;
   ClockSync& clockSync_;
   PirMotion& pirMotion_;

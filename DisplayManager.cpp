@@ -5,7 +5,8 @@
 const int SCREEN_WIDTH = 128;
 const int SCREEN_HEIGHT = 64;
 const int HEADER_HEIGHT = 16;
-const int CONTENT_TOP = HEADER_HEIGHT + 1;
+const int HEADER_TOP = SCREEN_HEIGHT - HEADER_HEIGHT;
+const int CONTENT_TOP = 0;
 const int CONTENT_HEIGHT = SCREEN_HEIGHT - HEADER_HEIGHT - 1;
 const int CLOCK_TEXT_SIZE = 3;
 const int CLOCK_TEXT_HEIGHT = 8 * CLOCK_TEXT_SIZE;
@@ -17,7 +18,6 @@ const bool SHOW_SECTION_BORDERS = false;
 const bool SHOW_STATE_TEXT = true;
 const bool SHOW_BATTERY_TEXT = true;
 const bool CENTER_BATTERY_ICON = false;
-const bool USE_12_HOUR_CLOCK = false;
 
 DisplayManager::DisplayManager(Adafruit_SSD1306& display, BatteryMonitor& batteryMonitor)
   : display_(display),
@@ -27,11 +27,14 @@ DisplayManager::DisplayManager(Adafruit_SSD1306& display, BatteryMonitor& batter
     blankedAtMs_(0),
     lastDisplayedSeconds_(-1),
     lastDisplayedTimerColon_(false),
+    lastDisplayedCountdownRunning_(false),
     lastDisplayedSyncState_(TIME_SYNC_IDLE),
     lastDisplayedClockHour_(-1),
     lastDisplayedClockMinute_(-1),
     lastDisplayedClockColon_(false),
-    lastDisplayedSettingBlink_(true) {
+    lastDisplayedSettingBlink_(true),
+    use12HourClock_(false),
+    debugBottomBar_(false) {
 }
 
 void DisplayManager::setPower(bool enabled) {
@@ -139,8 +142,35 @@ void DisplayManager::showSyncStatus(bool force, const ClockSync& clockSync) {
   batteryMonitor_.clearDisplayDirty();
 }
 
-void DisplayManager::showTimer(int remainingSeconds, bool colonVisible) {
-  drawCountdownScreen("TIMER", remainingSeconds, colonVisible);
+void DisplayManager::showTimer(int remainingSeconds, int startSeconds, bool colonVisible, bool countdownRunning) {
+  setPower(true);
+  lastDisplayedSeconds_ = remainingSeconds;
+  lastDisplayedTimerColon_ = colonVisible;
+  lastDisplayedCountdownRunning_ = countdownRunning;
+  displayBlank_ = false;
+
+  display_.clearDisplay();
+  display_.setTextColor(SSD1306_WHITE);
+
+  if (countdownRunning) {
+    drawTimerProgress(remainingSeconds, startSeconds);
+  } else {
+    drawScreenFrame("TIMER");
+    drawBatteryStatus();
+  }
+
+  int countdownWidth = 5 * 6 * COUNTDOWN_TEXT_SIZE;
+  int countdownX = (SCREEN_WIDTH - countdownWidth) / 2;
+  int countdownY = CONTENT_TOP + (CONTENT_HEIGHT - COUNTDOWN_TEXT_HEIGHT) / 2;
+
+  display_.setTextSize(COUNTDOWN_TEXT_SIZE);
+  display_.setCursor(countdownX, countdownY);
+  printTwoDigits(remainingSeconds / 60);
+  display_.print(colonVisible ? ":" : " ");
+  printTwoDigits(remainingSeconds % 60);
+
+  display_.display();
+  batteryMonitor_.clearDisplayDirty();
 }
 
 void DisplayManager::showAlarmCountdown(int remainingSeconds) {
@@ -185,6 +215,65 @@ void DisplayManager::showClock(bool force, const char* label, uint8_t hour, uint
   batteryMonitor_.clearDisplayDirty();
 }
 
+void DisplayManager::showSettings(
+  uint8_t selectedRow,
+  bool musicEnabled,
+  bool pirEnabled,
+  bool use12HourClock,
+  bool debugBottomBar
+) {
+  const char* labels[] = { "Music", "PIR", "AM/PM mode", "Debug bar", "Done" };
+  const char* values[] = {
+    musicEnabled ? "ON" : "OFF",
+    pirEnabled ? "ON" : "OFF",
+    use12HourClock ? "ON" : "OFF",
+    debugBottomBar ? "ON" : "OFF",
+    ""
+  };
+
+  setPower(true);
+  displayBlank_ = false;
+  display_.clearDisplay();
+  display_.setTextSize(1);
+  display_.setTextWrap(false);
+
+  for (uint8_t row = 0; row < 5; ++row) {
+    int rowY = row < 4 ? row * 12 : HEADER_TOP;
+    int rowHeight = row < 4 ? 12 : HEADER_HEIGHT;
+    bool selected = row == selectedRow;
+    if (selected) {
+      display_.fillRect(0, rowY, SCREEN_WIDTH, rowHeight, SSD1306_WHITE);
+      display_.setTextColor(SSD1306_BLACK);
+    } else {
+      display_.setTextColor(SSD1306_WHITE);
+    }
+
+    if (row < 4) {
+      display_.setCursor(3, rowY + 2);
+      display_.print(labels[row]);
+      int valueX = SCREEN_WIDTH - strlen(values[row]) * 6 - 3;
+      display_.setCursor(valueX, rowY + 2);
+      display_.print(values[row]);
+    } else {
+      int doneX = (SCREEN_WIDTH - strlen(labels[row]) * 6) / 2;
+      display_.setCursor(doneX, rowY + 4);
+      display_.print(labels[row]);
+    }
+  }
+
+  display_.display();
+}
+
+void DisplayManager::setUse12HourClock(bool enabled) {
+  use12HourClock_ = enabled;
+  resetClockCache();
+}
+
+void DisplayManager::setDebugBottomBar(bool enabled) {
+  debugBottomBar_ = enabled;
+  resetClockCache();
+}
+
 void DisplayManager::drawAnimationScreen(const char* stateLabel, const AnimationClip& clip, uint8_t frameIndex) {
   setPower(true);
   displayBlank_ = false;
@@ -206,8 +295,10 @@ void DisplayManager::drawAnimationScreen(const char* stateLabel, const Animation
   batteryMonitor_.clearDisplayDirty();
 }
 
-bool DisplayManager::timerNeedsUpdate(int remainingSeconds, bool colonVisible) const {
-  return remainingSeconds != lastDisplayedSeconds_ || colonVisible != lastDisplayedTimerColon_;
+bool DisplayManager::timerNeedsUpdate(int remainingSeconds, bool colonVisible, bool countdownRunning) const {
+  return remainingSeconds != lastDisplayedSeconds_ ||
+         colonVisible != lastDisplayedTimerColon_ ||
+         countdownRunning != lastDisplayedCountdownRunning_;
 }
 
 bool DisplayManager::settingNeedsUpdate(bool fieldVisible) const {
@@ -230,13 +321,13 @@ void DisplayManager::setTimerColonCache(bool colonVisible) {
 
 void DisplayManager::drawScreenFrame(const char* stateLabel) {
   if (SHOW_SECTION_BORDERS) {
-    display_.drawRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
-    display_.drawRect(0, HEADER_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HEADER_HEIGHT, SSD1306_WHITE);
+    display_.drawRect(0, HEADER_TOP, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
+    display_.drawRect(0, 0, SCREEN_WIDTH, HEADER_TOP, SSD1306_WHITE);
   }
 
-  if (SHOW_STATE_TEXT) {
+  if (debugBottomBar_ && SHOW_STATE_TEXT) {
     display_.setTextSize(1);
-    display_.setCursor(2, 4);
+    display_.setCursor(2, HEADER_TOP + 4);
     display_.print(stateLabel);
   }
 }
@@ -244,8 +335,10 @@ void DisplayManager::drawScreenFrame(const char* stateLabel) {
 void DisplayManager::drawBatteryStatus() {
   const int batteryWidth = 18;
   const int batteryHeight = 7;
-  const int batteryX = CENTER_BATTERY_ICON ? (SCREEN_WIDTH - batteryWidth) / 2 : SCREEN_WIDTH - batteryWidth - 3;
-  const int batteryY = (HEADER_HEIGHT - batteryHeight) / 2;
+  const int batteryX = (!debugBottomBar_ || CENTER_BATTERY_ICON)
+                         ? (SCREEN_WIDTH - batteryWidth) / 2
+                         : SCREEN_WIDTH - batteryWidth - 3;
+  const int batteryY = HEADER_TOP + (HEADER_HEIGHT - batteryHeight) / 2;
   const int terminalWidth = 2;
   const int terminalHeight = 3;
   const int terminalY = batteryY + (batteryHeight - terminalHeight) / 2;
@@ -254,11 +347,11 @@ void DisplayManager::drawBatteryStatus() {
   String percentText = String(batteryMonitor_.percent()) + "%";
   const int batteryVoltsTextWidth = batteryVoltsText.length() * 6;
   const int percentTextWidth = percentText.length() * 6;
-  const int textY = 4;
+  const int textY = HEADER_TOP + 4;
   const int percentTextX = batteryX - terminalWidth - 3 - percentTextWidth;
   const int batteryVoltsTextX = percentTextX - 4 - batteryVoltsTextWidth;
 
-  if (SHOW_BATTERY_TEXT) {
+  if (debugBottomBar_ && SHOW_BATTERY_TEXT) {
     display_.setTextSize(1);
     display_.setCursor(batteryVoltsTextX, textY);
     display_.print(batteryVoltsText);
@@ -269,6 +362,50 @@ void DisplayManager::drawBatteryStatus() {
   display_.drawRect(batteryX, batteryY, batteryWidth, batteryHeight, SSD1306_WHITE);
   display_.fillRect(batteryX - terminalWidth, terminalY, terminalWidth, terminalHeight, SSD1306_WHITE);
   display_.fillRect(batteryX + batteryWidth - 2 - fillWidth, batteryY + 2, fillWidth, batteryHeight - 4, SSD1306_WHITE);
+}
+
+void DisplayManager::drawTimerProgress(int remainingSeconds, int startSeconds) {
+  const int barWidth = 5 * 6 * COUNTDOWN_TEXT_SIZE;
+  const int barX = (SCREEN_WIDTH - barWidth) / 2;
+  const int barY = HEADER_TOP + 4;
+  const int barHeight = 8;
+  const int barRadius = 3;
+  const int innerWidth = barWidth - 4;
+  int fillWidth = 0;
+
+  if (startSeconds > 0) {
+    fillWidth = (int)(((int64_t)constrain(remainingSeconds, 0, startSeconds) * innerWidth) /
+                      startSeconds);
+  }
+
+  display_.drawRoundRect(
+    barX,
+    barY,
+    barWidth,
+    barHeight,
+    barRadius,
+    SSD1306_WHITE
+  );
+  if (fillWidth > 0) {
+    if (fillWidth >= 4) {
+      display_.fillRoundRect(
+        barX + 2,
+        barY + 2,
+        fillWidth,
+        barHeight - 4,
+        2,
+        SSD1306_WHITE
+      );
+    } else {
+      display_.fillRect(
+        barX + 2,
+        barY + 2,
+        fillWidth,
+        barHeight - 4,
+        SSD1306_WHITE
+      );
+    }
+  }
 }
 
 void DisplayManager::drawCountdownScreen(const char* stateLabel, int remainingSeconds, bool colonVisible) {
@@ -305,12 +442,12 @@ void DisplayManager::printTwoDigits(int value) {
 }
 
 void DisplayManager::drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute) {
-  uint8_t displayHour = USE_12_HOUR_CLOCK ? hour12Value(hour24) : hour24;
-  int hourDigits = USE_12_HOUR_CLOCK ? (displayHour < 10 ? 1 : 2) : 2;
+  uint8_t displayHour = use12HourClock_ ? hour12Value(hour24) : hour24;
+  int hourDigits = use12HourClock_ ? (displayHour < 10 ? 1 : 2) : 2;
   int timeChars = hourDigits + 1 + 2;
   int timeWidth = timeChars * 6 * CLOCK_TEXT_SIZE;
-  int amPmWidth = USE_12_HOUR_CLOCK ? 2 * 6 : 0;
-  int blockWidth = timeWidth + (USE_12_HOUR_CLOCK ? CLOCK_AM_PM_GAP + amPmWidth : 0);
+  int amPmWidth = use12HourClock_ ? 2 * 6 : 0;
+  int blockWidth = timeWidth + (use12HourClock_ ? CLOCK_AM_PM_GAP + amPmWidth : 0);
   int timeX = (SCREEN_WIDTH - blockWidth) / 2;
   int timeY = CONTENT_TOP + (CONTENT_HEIGHT - CLOCK_TEXT_HEIGHT) / 2;
   int amPmX = timeX + timeWidth + CLOCK_AM_PM_GAP;
@@ -319,7 +456,7 @@ void DisplayManager::drawClockTime(uint8_t hour24, uint8_t minute, bool colonVis
   display_.setTextSize(CLOCK_TEXT_SIZE);
   display_.setCursor(timeX, timeY);
   if (showHour) {
-    if (!USE_12_HOUR_CLOCK && displayHour < 10) {
+    if (!use12HourClock_ && displayHour < 10) {
       display_.print("0");
     }
     display_.print(displayHour);
@@ -335,7 +472,7 @@ void DisplayManager::drawClockTime(uint8_t hour24, uint8_t minute, bool colonVis
     display_.print("  ");
   }
 
-  if (USE_12_HOUR_CLOCK) {
+  if (use12HourClock_) {
     display_.setTextSize(1);
     display_.setCursor(amPmX, amPmY);
     display_.print(hour24 < 12 ? "AM" : "PM");

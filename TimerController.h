@@ -5,7 +5,7 @@
 
 class TimerController {
 public:
-  TimerController(int stepSeconds, int maxSeconds, uint32_t startDelayMs, uint32_t colonBlinkDelayMs);
+  TimerController(int maxSeconds, uint32_t startDelayMs, uint32_t colonBlinkDelayMs);
 
   void begin();
   void adjustSettingHour(int direction);
@@ -13,25 +13,28 @@ public:
   void restartSettingBlink();
   bool settingFieldVisible() const;
 
-  void adjustTimer(int direction);
+  void adjustTimer(int direction, int stepSeconds);
   bool updateCountdown();
   void resetTimer();
   void restartTimerBlink();
   bool timerColonVisible() const;
+  bool countdownRunning() const;
 
   uint8_t settingHour() const;
   uint8_t settingMinute() const;
   int remainingSeconds() const;
+  int countdownStartSeconds() const;
 
 private:
   int wrapValue(int value, int minimumValue, int maximumValue) const;
 
-  int stepSeconds_;
   int maxSeconds_;
   uint32_t startDelayMs_;
   uint32_t colonBlinkDelayMs_;
 
   int remainingSeconds_;
+  int countdownStartSeconds_;
+  bool countdownRunning_;
   uint32_t nextTimerTickMs_;
   uint32_t timerBlinkStartedAtMs_;
   uint8_t settingHour_;

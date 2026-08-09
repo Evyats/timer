@@ -31,7 +31,18 @@ AlarmPlayer::AlarmPlayer(
       { mainPiezoPin, 1, false, false },
       { harmonyPiezoPin, 2, false, false },
     },
+    voicesActiveOnly_{
+      { activePiezoPin, 0, true, false },
+      { mainPiezoPin, 1, false, true },
+      { harmonyPiezoPin, 2, false, true },
+    },
+    voicesMuted_{
+      { activePiezoPin, 0, true, true },
+      { mainPiezoPin, 1, false, true },
+      { harmonyPiezoPin, 2, false, true },
+    },
     currentSong_(nullptr),
+    musicEnabled_(true),
     active_(false),
     activePiezoEnabled_(false),
     activePiezoLedOn_(false),
@@ -121,6 +132,14 @@ bool AlarmPlayer::shouldIgnoreSound() const {
   return activePiezoEnabled_ && player_.positionMs() <= soundIgnoredUntilSongMs_;
 }
 
+void AlarmPlayer::setMusicEnabled(bool enabled) {
+  musicEnabled_ = enabled;
+}
+
+bool AlarmPlayer::musicEnabled() const {
+  return musicEnabled_;
+}
+
 void AlarmPlayer::testOutputs() {
   Serial.print("Testing main passive piezo on GPIO ");
   Serial.print(mainPiezoPin_);
@@ -154,10 +173,15 @@ void AlarmPlayer::testOutputs() {
 }
 
 void AlarmPlayer::configureVoices(bool includeActivePiezo) {
-  if (includeActivePiezo) {
+  if (includeActivePiezo && musicEnabled_) {
     player_.begin(voicesWithActive_, sizeof(voicesWithActive_) / sizeof(voicesWithActive_[0]));
-  } else {
+  } else if (musicEnabled_) {
     player_.begin(voicesPassiveOnly_, sizeof(voicesPassiveOnly_) / sizeof(voicesPassiveOnly_[0]));
+    digitalWrite(activePiezoPin_, LOW);
+  } else if (includeActivePiezo) {
+    player_.begin(voicesActiveOnly_, sizeof(voicesActiveOnly_) / sizeof(voicesActiveOnly_[0]));
+  } else {
+    player_.begin(voicesMuted_, sizeof(voicesMuted_) / sizeof(voicesMuted_[0]));
     digitalWrite(activePiezoPin_, LOW);
   }
 

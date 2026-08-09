@@ -1,6 +1,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <esp_system.h>
+#include <Preferences.h>
 #include <Wire.h>
 
 #include "AlarmPlayer.h"
@@ -72,22 +73,32 @@ enum DeviceMode {
   MODE_SET_MINUTE,
   MODE_READY,
   MODE_TIMER,
-  MODE_ALARM_PLAYING
+  MODE_ALARM_PLAYING,
+  MODE_SETTINGS
+};
+
+struct TimerSettings {
+  bool musicEnabled;
+  bool pirEnabled;
+  bool use12HourClock;
+  bool debugBottomBar;
 };
 
 void showReadyForPirState(bool force, bool forceDisplayOn = false);
 void selectLoadingAnimation();
 void renderLoadingAnimation(bool force);
+void renderSettings();
+void openSettings();
+void updateSettingsLongPress();
+void loadSettings();
+void saveSettings();
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 BatteryMonitor batteryMonitor(
   BATTERY_ADC_PIN,
   BATTERY_R1_OHMS,
   BATTERY_R2_OHMS,
-  BATTERY_ADC_SAMPLES,
-  BATTERY_PERCENT_SMOOTHING_WINDOW,
-  BATTERY_UPDATE_MS,
-  BATTERY_SAMPLE_INTERVAL_MS
+  BATTERY_UPDATE_MS
 );
 ClockSync clockSync(
   WIFI_SSID,
@@ -135,16 +146,18 @@ AlarmPlayer alarmPlayer(
 );
 SleepManager sleepManager(
   PIR_PIN,
+  ENCODER_BUTTON_PIN,
   displayManager,
   clockSync,
   pirMotion
 );
 TimerController timerController(
-  STEP_SECONDS,
   MAX_SECONDS,
   TIMER_START_DELAY_MS,
   TIMER_COLON_BLINK_DELAY_MS
 );
+Preferences settingsPreferences;
+TimerSettings timerSettings = { true, true, false, false };
 
 DeviceMode mode = MODE_SET_HOUR;
 uint8_t soundAnimationFrame = 0;
@@ -152,15 +165,24 @@ uint32_t nextSoundAnimationFrameMs = 0;
 uint8_t loadingAnimationIndex = 0;
 uint8_t loadingAnimationFrame = 0;
 uint32_t nextLoadingAnimationFrameMs = 0;
+uint8_t selectedSettingsRow = 0;
+bool settingsLongPressArmed = false;
+uint32_t settingsLongPressStartedMs = 0;
 
 void setup() {
   Serial.begin(115200);
 
+  loadSettings();
   inputController.begin();
-  pirMotion.begin();
+  if (timerSettings.pirEnabled) {
+    pirMotion.begin();
+  }
   soundTrigger.begin();
   alarmPlayer.begin();
   timerController.begin();
+  alarmPlayer.setMusicEnabled(timerSettings.musicEnabled);
+  displayManager.setUse12HourClock(timerSettings.use12HourClock);
+  displayManager.setDebugBottomBar(timerSettings.debugBottomBar);
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -169,6 +191,8 @@ void setup() {
       delay(100);
     }
   }
+
+  display.setRotation(2);
 
   batteryMonitor.begin();
 
@@ -181,13 +205,22 @@ void setup() {
   Serial.println("OLED rotary timer");
   Serial.print("Wakeup cause: ");
   Serial.println(sleepManager.wakeupCauseCode());
-  Serial.println("PIR warmup running in background.");
+  Serial.println(
+    timerSettings.pirEnabled
+      ? "PIR warmup running in background."
+      : "PIR disabled in settings."
+  );
   mode = MODE_READY;
   selectLoadingAnimation();
-  clockSync.startSync();
+  pirMotion.keepDisplayOn(DISPLAY_HOLD_AFTER_ACTIVITY_MS);
+  if (clockSync.shouldSync(WIFI_RESYNC_AFTER_SECONDS)) {
+    clockSync.startSync();
+    Serial.println("Starting background Wi-Fi time sync.");
+  } else {
+    Serial.println("Recent NTP sync retained; Wi-Fi sync skipped on this wake.");
+  }
   showReadyForPirState(true, true);
 
-  Serial.println("Starting background Wi-Fi time sync.");
   Serial.println("Send 't' in Serial Monitor to test the three piezo outputs.");
 }
 
@@ -203,6 +236,7 @@ void loop() {
   updateSensors();
   handleEncoder();
   handleEncoderButton();
+  updateSettingsLongPress();
   updateTimer();
   updateAlarmPlayback();
   batteryMonitor.update();
@@ -228,6 +262,12 @@ void handleEncoder() {
     return;
   }
 
+  if (mode == MODE_SETTINGS) {
+    selectedSettingsRow = (selectedSettingsRow + direction + 5) % 5;
+    renderSettings();
+    return;
+  }
+
   if (mode == MODE_SET_HOUR) {
     timerController.adjustSettingHour(direction);
     renderClockSetting();
@@ -241,14 +281,23 @@ void handleEncoder() {
   }
 
   if (mode == MODE_ALARM_PLAYING) {
+    settingsLongPressArmed = false;
     stopAlarmPlayback();
   }
 
-  timerController.adjustTimer(direction);
+  timerController.adjustTimer(
+    direction,
+    timerSettings.debugBottomBar ? DEBUG_STEP_SECONDS : STEP_SECONDS
+  );
   if (timerController.remainingSeconds() > 0) {
     mode = MODE_TIMER;
     displayManager.setTimerColonCache(true);
-    displayManager.showTimer(timerController.remainingSeconds(), timerController.timerColonVisible());
+    displayManager.showTimer(
+      timerController.remainingSeconds(),
+      timerController.countdownStartSeconds(),
+      timerController.timerColonVisible(),
+      timerController.countdownRunning()
+    );
   } else {
     enterReadyMode();
   }
@@ -296,8 +345,98 @@ void handleButtonPress() {
   }
 
   if (mode == MODE_READY) {
-    startAlarmPlayback(false);
+    settingsLongPressArmed = true;
+    settingsLongPressStartedMs = millis();
+    if (timerSettings.musicEnabled) {
+      startAlarmPlayback(false);
+    }
+    return;
   }
+
+  if (mode == MODE_SETTINGS) {
+    if (selectedSettingsRow == 0) {
+      timerSettings.musicEnabled = !timerSettings.musicEnabled;
+      alarmPlayer.setMusicEnabled(timerSettings.musicEnabled);
+    } else if (selectedSettingsRow == 1) {
+      timerSettings.pirEnabled = !timerSettings.pirEnabled;
+      if (timerSettings.pirEnabled) {
+        pirMotion.begin();
+      }
+    } else if (selectedSettingsRow == 2) {
+      timerSettings.use12HourClock = !timerSettings.use12HourClock;
+      displayManager.setUse12HourClock(timerSettings.use12HourClock);
+    } else if (selectedSettingsRow == 3) {
+      timerSettings.debugBottomBar = !timerSettings.debugBottomBar;
+      displayManager.setDebugBottomBar(timerSettings.debugBottomBar);
+    } else {
+      saveSettings();
+      enterReadyMode();
+      Serial.println("Settings closed.");
+      return;
+    }
+
+    saveSettings();
+    renderSettings();
+  }
+}
+
+void updateSettingsLongPress() {
+  if (!settingsLongPressArmed) {
+    return;
+  }
+
+  if (!inputController.buttonDown()) {
+    settingsLongPressArmed = false;
+    return;
+  }
+
+  if (millis() - settingsLongPressStartedMs < SETTINGS_LONG_PRESS_MS) {
+    return;
+  }
+
+  openSettings();
+}
+
+void openSettings() {
+  settingsLongPressArmed = false;
+  if (alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
+    alarmPlayer.stop();
+  }
+
+  timerController.resetTimer();
+  mode = MODE_SETTINGS;
+  selectedSettingsRow = 0;
+  pirMotion.keepDisplayOn(BUTTON_DISPLAY_HOLD_MS);
+  renderSettings();
+  Serial.println("Settings opened by long press.");
+}
+
+void renderSettings() {
+  displayManager.showSettings(
+    selectedSettingsRow,
+    timerSettings.musicEnabled,
+    timerSettings.pirEnabled,
+    timerSettings.use12HourClock,
+    timerSettings.debugBottomBar
+  );
+}
+
+void loadSettings() {
+  settingsPreferences.begin("timer", true);
+  timerSettings.musicEnabled = settingsPreferences.getBool("music", true);
+  timerSettings.pirEnabled = settingsPreferences.getBool("pir", true);
+  timerSettings.use12HourClock = settingsPreferences.getBool("use12h", false);
+  timerSettings.debugBottomBar = settingsPreferences.getBool("debugBar", false);
+  settingsPreferences.end();
+}
+
+void saveSettings() {
+  settingsPreferences.begin("timer", false);
+  settingsPreferences.putBool("music", timerSettings.musicEnabled);
+  settingsPreferences.putBool("pir", timerSettings.pirEnabled);
+  settingsPreferences.putBool("use12h", timerSettings.use12HourClock);
+  settingsPreferences.putBool("debugBar", timerSettings.debugBottomBar);
+  settingsPreferences.end();
 }
 
 void keepDisplayOnAfterButtonPress() {
@@ -321,6 +460,10 @@ void updateTimer() {
 }
 
 void updateDisplayIfNeeded() {
+  if (mode == MODE_SETTINGS) {
+    return;
+  }
+
   if (mode == MODE_SET_HOUR || mode == MODE_SET_MINUTE) {
     if (batteryMonitor.displayDirty() || displayManager.settingNeedsUpdate(timerController.settingFieldVisible())) {
       renderClockSetting();
@@ -340,8 +483,17 @@ void updateDisplayIfNeeded() {
 
   if (mode == MODE_TIMER &&
       (batteryMonitor.displayDirty() ||
-       displayManager.timerNeedsUpdate(timerController.remainingSeconds(), timerController.timerColonVisible()))) {
-    displayManager.showTimer(timerController.remainingSeconds(), timerController.timerColonVisible());
+       displayManager.timerNeedsUpdate(
+         timerController.remainingSeconds(),
+         timerController.timerColonVisible(),
+         timerController.countdownRunning()
+       ))) {
+    displayManager.showTimer(
+      timerController.remainingSeconds(),
+      timerController.countdownStartSeconds(),
+      timerController.timerColonVisible(),
+      timerController.countdownRunning()
+    );
   }
 }
 
@@ -394,15 +546,17 @@ void enterReadyMode() {
 
 void showReadyForPirState(bool force, bool forceDisplayOn) {
   bool syncActive = clockSync.isSyncActive();
-  bool displayShouldStayOn = forceDisplayOn || syncActive || pirMotion.motionConfirmed() || pirMotion.displayHoldActive();
+  bool displayShouldStayOn = !timerSettings.pirEnabled ||
+                             forceDisplayOn ||
+                             syncActive ||
+                             pirMotion.motionConfirmed() ||
+                             pirMotion.displayHoldActive();
 
   if (displayShouldStayOn) {
-    if (!clockSync.hasValidTime()) {
-      if (syncActive) {
-        renderLoadingAnimation(force);
-      } else {
-        displayManager.showSyncStatus(force, clockSync);
-      }
+    if (syncActive) {
+      renderLoadingAnimation(force);
+    } else if (!clockSync.hasValidTime()) {
+      displayManager.showSyncStatus(force, clockSync);
     } else {
       displayManager.showClock(force, "READY", clockSync.hour(), clockSync.minute(), clockSync.second());
     }
@@ -413,7 +567,7 @@ void showReadyForPirState(bool force, bool forceDisplayOn) {
 }
 
 void handleDeepSleep() {
-  if (!ENABLE_DEEP_SLEEP || mode != MODE_READY || !displayManager.isBlank() || alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
+  if (!ENABLE_DEEP_SLEEP || mode != MODE_READY || alarmPlayer.isActive() || alarmPlayer.isPlaying()) {
     return;
   }
 
@@ -421,17 +575,27 @@ void handleDeepSleep() {
     return;
   }
 
-  if (!displayManager.blankedForAtLeast(DEEP_SLEEP_AFTER_MS)) {
+  if (timerSettings.pirEnabled) {
+    if (!displayManager.blankedForAtLeast(DEEP_SLEEP_AFTER_BLANK_MS)) {
+      return;
+    }
+
+    if (pirMotion.motionConfirmed()) {
+      pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
+      showReadyForPirState(true, true);
+      return;
+    }
+  } else if (!pirMotion.idleForAtLeast(DEEP_SLEEP_AFTER_BLANK_MS)) {
     return;
   }
 
-  if (pirMotion.motionConfirmed()) {
-    pirMotion.keepDisplayOn(PIR_DISPLAY_HOLD_MS);
+  if (inputController.buttonDown()) {
+    pirMotion.keepDisplayOn(BUTTON_DISPLAY_HOLD_MS);
     showReadyForPirState(true, true);
     return;
   }
 
-  sleepManager.enterDeepSleep();
+  sleepManager.enterDeepSleep(timerSettings.pirEnabled);
 }
 
 void startAlarmPlayback(bool includeActivePiezo) {
@@ -468,7 +632,7 @@ void updateAlarmPlayback() {
 }
 
 void updateSensors() {
-  if (pirMotion.update() && mode == MODE_READY) {
+  if (timerSettings.pirEnabled && pirMotion.update() && mode == MODE_READY) {
     showReadyForPirState(true, true);
   }
 

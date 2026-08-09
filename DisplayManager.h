@@ -19,13 +19,22 @@ public:
 
   void showClockSetting(uint8_t hour, uint8_t minute, bool editingHour, bool editingMinute, bool fieldVisible);
   void showSyncStatus(bool force, const ClockSync& clockSync);
-  void showTimer(int remainingSeconds, bool colonVisible);
+  void showTimer(int remainingSeconds, int startSeconds, bool colonVisible, bool countdownRunning);
   void showAlarmCountdown(int remainingSeconds);
   void showLoadingAnimationFrame(uint8_t animationIndex, uint8_t frameIndex);
   void showSoundAnimationFrame(uint8_t frameIndex);
   void showClock(bool force, const char* label, uint8_t hour, uint8_t minute, uint8_t second);
+  void showSettings(
+    uint8_t selectedRow,
+    bool musicEnabled,
+    bool pirEnabled,
+    bool use12HourClock,
+    bool debugBottomBar
+  );
+  void setUse12HourClock(bool enabled);
+  void setDebugBottomBar(bool enabled);
 
-  bool timerNeedsUpdate(int remainingSeconds, bool colonVisible) const;
+  bool timerNeedsUpdate(int remainingSeconds, bool colonVisible, bool countdownRunning) const;
   bool settingNeedsUpdate(bool fieldVisible) const;
   void resetTimerCache();
   void resetClockCache();
@@ -34,6 +43,7 @@ public:
 private:
   void drawScreenFrame(const char* stateLabel);
   void drawBatteryStatus();
+  void drawTimerProgress(int remainingSeconds, int startSeconds);
   void drawAnimationScreen(const char* stateLabel, const AnimationClip& clip, uint8_t frameIndex);
   void drawCountdownScreen(const char* stateLabel, int remainingSeconds, bool colonVisible);
   void printTwoDigits(int value);
@@ -48,11 +58,14 @@ private:
   uint32_t blankedAtMs_;
   int lastDisplayedSeconds_;
   bool lastDisplayedTimerColon_;
+  bool lastDisplayedCountdownRunning_;
   TimeSyncState lastDisplayedSyncState_;
   int lastDisplayedClockHour_;
   int lastDisplayedClockMinute_;
   bool lastDisplayedClockColon_;
   bool lastDisplayedSettingBlink_;
+  bool use12HourClock_;
+  bool debugBottomBar_;
 };
 
 #endif

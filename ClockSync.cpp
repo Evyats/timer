@@ -1,6 +1,8 @@
 #include "ClockSync.h"
 
 #include "esp_sntp.h"
+#include <esp_sleep.h>
+#include <sys/time.h>
 #include <time.h>
 
 const uint32_t WIFI_CONNECT_RETRY_MS = 12000;
@@ -9,6 +11,9 @@ const time_t VALID_TIME_THRESHOLD = 1700000000;
 
 namespace {
 volatile bool ntpTimeSyncReceived = false;
+RTC_DATA_ATTR uint32_t retainedClockMagic = 0;
+RTC_DATA_ATTR time_t retainedLastNtpSyncEpoch = 0;
+const uint32_t RETAINED_CLOCK_MAGIC = 0x54494D45;
 
 void onNtpTimeSync(struct timeval*) {
   ntpTimeSyncReceived = true;
@@ -52,7 +57,19 @@ void ClockSync::begin() {
   WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
   sntp_set_time_sync_notification_cb(onNtpTimeSync);
+  setenv("TZ", timezone_, 1);
+  tzset();
   lastClockTickMs_ = millis();
+
+  bool wokeFromDeepSleep = esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_UNDEFINED;
+  time_t nowSeconds = time(nullptr);
+  if (wokeFromDeepSleep &&
+      retainedClockMagic == RETAINED_CLOCK_MAGIC &&
+      nowSeconds > VALID_TIME_THRESHOLD) {
+    applySystemClock();
+    syncState_ = TIME_SYNC_COMPLETE;
+    Serial.println("Clock restored from the RTC after deep sleep.");
+  }
 }
 
 void ClockSync::startSync() {
@@ -202,16 +219,46 @@ void ClockSync::updateClock(bool pauseClock) {
 }
 
 void ClockSync::setManualTime(uint8_t hour, uint8_t minute) {
-  hour_ = hour;
-  minute_ = minute;
-  second_ = 0;
-  lastClockTickMs_ = millis();
-  hasValidTime_ = true;
+  time_t nowSeconds = time(nullptr);
+  struct tm timeInfo = {};
+  if (nowSeconds > VALID_TIME_THRESHOLD) {
+    localtime_r(&nowSeconds, &timeInfo);
+  } else {
+    timeInfo.tm_year = 124;
+    timeInfo.tm_mon = 0;
+    timeInfo.tm_mday = 1;
+  }
+
+  timeInfo.tm_hour = hour;
+  timeInfo.tm_min = minute;
+  timeInfo.tm_sec = 0;
+  timeInfo.tm_isdst = -1;
+  time_t manualEpoch = mktime(&timeInfo);
+  struct timeval manualTime = { manualEpoch, 0 };
+  settimeofday(&manualTime, nullptr);
+
+  retainedClockMagic = RETAINED_CLOCK_MAGIC;
+  applySystemClock();
 }
 
 void ClockSync::disconnectAndDisableWifi() {
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
+}
+
+bool ClockSync::shouldSync(uint32_t maxAgeSeconds) const {
+  if (!hasValidTime_ ||
+      retainedClockMagic != RETAINED_CLOCK_MAGIC ||
+      retainedLastNtpSyncEpoch <= VALID_TIME_THRESHOLD) {
+    return true;
+  }
+
+  time_t nowSeconds = time(nullptr);
+  if (nowSeconds < retainedLastNtpSyncEpoch) {
+    return true;
+  }
+
+  return (uint64_t)(nowSeconds - retainedLastNtpSyncEpoch) >= maxAgeSeconds;
 }
 
 bool ClockSync::hasValidTime() const {
@@ -336,15 +383,9 @@ const char* ClockSync::wifiStatusName(wl_status_t wifiStatus) const {
 }
 
 void ClockSync::applySyncedClock() {
-  time_t nowSeconds = time(nullptr);
-  struct tm timeInfo;
-  localtime_r(&nowSeconds, &timeInfo);
-
-  hour_ = timeInfo.tm_hour;
-  minute_ = timeInfo.tm_min;
-  second_ = timeInfo.tm_sec;
-  lastClockTickMs_ = millis();
-  hasValidTime_ = true;
+  retainedClockMagic = RETAINED_CLOCK_MAGIC;
+  retainedLastNtpSyncEpoch = time(nullptr);
+  applySystemClock();
 
   Serial.print("Clock synced from NTP: ");
   uint8_t hour12 = hour_ % 12;
@@ -361,4 +402,16 @@ void ClockSync::applySyncedClock() {
   }
   Serial.print(minute_);
   Serial.println(hour_ < 12 ? " AM" : " PM");
+}
+
+void ClockSync::applySystemClock() {
+  time_t nowSeconds = time(nullptr);
+  struct tm timeInfo;
+  localtime_r(&nowSeconds, &timeInfo);
+
+  hour_ = timeInfo.tm_hour;
+  minute_ = timeInfo.tm_min;
+  second_ = timeInfo.tm_sec;
+  lastClockTickMs_ = millis();
+  hasValidTime_ = true;
 }

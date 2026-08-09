@@ -31,6 +31,7 @@ public:
   void updateClock(bool pauseClock);
   void setManualTime(uint8_t hour, uint8_t minute);
   void disconnectAndDisableWifi();
+  bool shouldSync(uint32_t maxAgeSeconds) const;
 
   bool hasValidTime() const;
   bool isSyncActive() const;
@@ -45,6 +46,7 @@ private:
   void beginConnectionAttempt();
   void finishSync(bool success);
   void applySyncedClock();
+  void applySystemClock();
   void logWifiStatus(wl_status_t wifiStatus) const;
   void logScanResult();
   const char* wifiStatusName(wl_status_t wifiStatus) const;
