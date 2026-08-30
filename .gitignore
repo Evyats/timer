@@ -9,3 +9,6 @@ wifi_secrets.h
 *.a
 *.d
 *.tmp
+
+# Local reference and scratch files
+**/_local/
