@@ -1,12 +1,12 @@
-#ifndef BAT_ELAY_H
-#define BAT_ELAY_H
+#ifndef BAAT_ELAY_H
+#define BAAT_ELAY_H
 
 #include <Arduino.h>
 #include <pgmspace.h>
 
 #include <PiezoMidiPlayer.h>
 
-const PiezoEvent BAT_ELAY_SONG_EVENTS[] PROGMEM = {
+const PiezoEvent BAAT_ELAY_SONG_EVENTS[] PROGMEM = {
   { 0, 0, 1 },
   { 0, 2, 165 },
   { 188, 0, 0 },
@@ -123,9 +123,9 @@ const PiezoEvent BAT_ELAY_SONG_EVENTS[] PROGMEM = {
   { 22500, 2, 0 },
 };
 
-const PiezoSong BAT_ELAY_SONG = {
-  BAT_ELAY_SONG_EVENTS,
-  sizeof(BAT_ELAY_SONG_EVENTS) / sizeof(BAT_ELAY_SONG_EVENTS[0]),
+const PiezoSong BAAT_ELAY_SONG = {
+  BAAT_ELAY_SONG_EVENTS,
+  sizeof(BAAT_ELAY_SONG_EVENTS) / sizeof(BAAT_ELAY_SONG_EVENTS[0]),
   3,
   23000
 };

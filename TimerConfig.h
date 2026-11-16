@@ -96,6 +96,9 @@ const char* const NTP_SERVER_1 = "pool.ntp.org";
 const char* const NTP_SERVER_2 = "time.google.com";
 const char* const NTP_SERVER_3 = "time.cloudflare.com";
 
+const char* const WIFI_SETUP_AP_SSID = "Timer-Setup";
+const uint32_t WIFI_SETUP_IDLE_TIMEOUT_MS = 10UL * 60UL * 1000UL;
+
 const int STEP_SECONDS = 60;
 const int DEBUG_STEP_SECONDS = 10;
 const int MAX_SECONDS = 99 * 60 + 59;

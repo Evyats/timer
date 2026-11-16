@@ -25,12 +25,13 @@ public:
   void showSoundAnimationFrame(uint8_t frameIndex);
   void showClock(bool force, const char* label, uint8_t hour, uint8_t minute, uint8_t second);
   void showSettings(
-    uint8_t selectedRow,
+    uint8_t selectedItem,
     bool musicEnabled,
     bool pirEnabled,
     bool use12HourClock,
     bool debugBottomBar
   );
+  void showWifiSetup(const char* apSsid, const String& ipAddress, const String& status);
   void setUse12HourClock(bool enabled);
   void setDebugBottomBar(bool enabled);
 
@@ -47,6 +48,7 @@ private:
   void drawAnimationScreen(const char* stateLabel, const AnimationClip& clip, uint8_t frameIndex);
   void drawCountdownScreen(const char* stateLabel, int remainingSeconds, bool colonVisible);
   void printTwoDigits(int value);
+  void printCentered(const String& text, int y);
   void drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute);
   uint8_t hour12Value(uint8_t hour24) const;
 

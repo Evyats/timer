@@ -15,7 +15,7 @@
 #include "TimerConfig.h"
 #include "TimerController.h"
 #include "AnimationAssets.h"
-#include "wifi_secrets.h"
+#include "WifiSetupPortal.h"
 
 /*
   OLED timer with rotary encoder, two passive piezos, active piezo, LED,
@@ -74,7 +74,18 @@ enum DeviceMode {
   MODE_READY,
   MODE_TIMER,
   MODE_ALARM_PLAYING,
-  MODE_SETTINGS
+  MODE_SETTINGS,
+  MODE_WIFI_SETUP
+};
+
+enum SettingsItem {
+  SETTINGS_MUSIC,
+  SETTINGS_PIR,
+  SETTINGS_AM_PM,
+  SETTINGS_DEBUG_BAR,
+  SETTINGS_WIFI,
+  SETTINGS_DONE,
+  SETTINGS_ITEM_COUNT
 };
 
 struct TimerSettings {
@@ -92,6 +103,9 @@ void openSettings();
 void updateSettingsLongPress();
 void loadSettings();
 void saveSettings();
+void openWifiSetup();
+void closeWifiSetup();
+void renderWifiSetup();
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 BatteryMonitor batteryMonitor(
@@ -101,8 +115,6 @@ BatteryMonitor batteryMonitor(
   BATTERY_UPDATE_MS
 );
 ClockSync clockSync(
-  WIFI_SSID,
-  WIFI_PASSWORD,
   ISRAEL_TZ,
   NTP_SERVER_1,
   NTP_SERVER_2,
@@ -156,6 +168,7 @@ TimerController timerController(
   TIMER_START_DELAY_MS,
   TIMER_COLON_BLINK_DELAY_MS
 );
+WifiSetupPortal wifiSetupPortal(WIFI_SETUP_AP_SSID, clockSync);
 Preferences settingsPreferences;
 TimerSettings timerSettings = { true, true, false, false };
 
@@ -165,7 +178,8 @@ uint32_t nextSoundAnimationFrameMs = 0;
 uint8_t loadingAnimationIndex = 0;
 uint8_t loadingAnimationFrame = 0;
 uint32_t nextLoadingAnimationFrameMs = 0;
-uint8_t selectedSettingsRow = 0;
+uint8_t selectedSettingsItem = SETTINGS_MUSIC;
+int8_t lastWifiSetupStatus = -1;
 bool settingsLongPressArmed = false;
 uint32_t settingsLongPressStartedMs = 0;
 
@@ -239,6 +253,7 @@ void loop() {
   updateSettingsLongPress();
   updateTimer();
   updateAlarmPlayback();
+  updateWifiSetup();
   batteryMonitor.update();
   updateDisplayIfNeeded();
   handleDeepSleep();
@@ -262,8 +277,12 @@ void handleEncoder() {
     return;
   }
 
+  if (mode == MODE_WIFI_SETUP) {
+    return;
+  }
+
   if (mode == MODE_SETTINGS) {
-    selectedSettingsRow = (selectedSettingsRow + direction + 5) % 5;
+    selectedSettingsItem = (selectedSettingsItem + direction + SETTINGS_ITEM_COUNT) % SETTINGS_ITEM_COUNT;
     renderSettings();
     return;
   }
@@ -353,21 +372,30 @@ void handleButtonPress() {
     return;
   }
 
+  if (mode == MODE_WIFI_SETUP) {
+    closeWifiSetup();
+    Serial.println("Wi-Fi setup closed by button.");
+    return;
+  }
+
   if (mode == MODE_SETTINGS) {
-    if (selectedSettingsRow == 0) {
+    if (selectedSettingsItem == SETTINGS_MUSIC) {
       timerSettings.musicEnabled = !timerSettings.musicEnabled;
       alarmPlayer.setMusicEnabled(timerSettings.musicEnabled);
-    } else if (selectedSettingsRow == 1) {
+    } else if (selectedSettingsItem == SETTINGS_PIR) {
       timerSettings.pirEnabled = !timerSettings.pirEnabled;
       if (timerSettings.pirEnabled) {
         pirMotion.begin();
       }
-    } else if (selectedSettingsRow == 2) {
+    } else if (selectedSettingsItem == SETTINGS_AM_PM) {
       timerSettings.use12HourClock = !timerSettings.use12HourClock;
       displayManager.setUse12HourClock(timerSettings.use12HourClock);
-    } else if (selectedSettingsRow == 3) {
+    } else if (selectedSettingsItem == SETTINGS_DEBUG_BAR) {
       timerSettings.debugBottomBar = !timerSettings.debugBottomBar;
       displayManager.setDebugBottomBar(timerSettings.debugBottomBar);
+    } else if (selectedSettingsItem == SETTINGS_WIFI) {
+      openWifiSetup();
+      return;
     } else {
       saveSettings();
       enterReadyMode();
@@ -405,7 +433,7 @@ void openSettings() {
 
   timerController.resetTimer();
   mode = MODE_SETTINGS;
-  selectedSettingsRow = 0;
+  selectedSettingsItem = SETTINGS_MUSIC;
   pirMotion.keepDisplayOn(BUTTON_DISPLAY_HOLD_MS);
   renderSettings();
   Serial.println("Settings opened by long press.");
@@ -413,12 +441,64 @@ void openSettings() {
 
 void renderSettings() {
   displayManager.showSettings(
-    selectedSettingsRow,
+    selectedSettingsItem,
     timerSettings.musicEnabled,
     timerSettings.pirEnabled,
     timerSettings.use12HourClock,
     timerSettings.debugBottomBar
   );
+}
+
+void openWifiSetup() {
+  clockSync.cancelSync();
+  wifiSetupPortal.start();
+  mode = MODE_WIFI_SETUP;
+  lastWifiSetupStatus = -1;
+  renderWifiSetup();
+  Serial.println("Wi-Fi setup opened.");
+}
+
+void closeWifiSetup() {
+  wifiSetupPortal.stop();
+  clockSync.startSync();
+  mode = MODE_SETTINGS;
+  pirMotion.keepDisplayOn(BUTTON_DISPLAY_HOLD_MS);
+  renderSettings();
+}
+
+void updateWifiSetup() {
+  if (mode != MODE_WIFI_SETUP) {
+    return;
+  }
+
+  wifiSetupPortal.update();
+  if (wifiSetupPortal.idleForMs() >= WIFI_SETUP_IDLE_TIMEOUT_MS) {
+    closeWifiSetup();
+    Serial.println("Wi-Fi setup closed after idle timeout.");
+  }
+}
+
+int8_t wifiSetupStatus() {
+  if (wifiSetupPortal.savedThisSession()) {
+    return 2;
+  }
+
+  return wifiSetupPortal.phoneConnected() ? 1 : 0;
+}
+
+void renderWifiSetup() {
+  int8_t status = wifiSetupStatus();
+  String statusText;
+  if (status == 2) {
+    statusText = String("Saved: ") + clockSync.wifiSsid();
+  } else if (status == 1) {
+    statusText = "Phone connected";
+  } else {
+    statusText = "Waiting for phone";
+  }
+
+  lastWifiSetupStatus = status;
+  displayManager.showWifiSetup(wifiSetupPortal.apSsid(), wifiSetupPortal.ipAddress(), statusText);
 }
 
 void loadSettings() {
@@ -461,6 +541,13 @@ void updateTimer() {
 
 void updateDisplayIfNeeded() {
   if (mode == MODE_SETTINGS) {
+    return;
+  }
+
+  if (mode == MODE_WIFI_SETUP) {
+    if (wifiSetupStatus() != lastWifiSetupStatus) {
+      renderWifiSetup();
+    }
     return;
   }
 

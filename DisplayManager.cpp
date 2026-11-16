@@ -136,6 +136,8 @@ void DisplayManager::showSyncStatus(bool force, const ClockSync& clockSync) {
   } else if (clockSync.syncState() == TIME_SYNC_FAILED) {
     display_.setCursor(12, detailY);
     display_.print("sync timeout");
+  } else if (clockSync.syncState() == TIME_SYNC_NO_CREDENTIALS) {
+    printCentered("Settings > Wi-Fi", detailY);
   }
 
   display_.display();
@@ -216,13 +218,17 @@ void DisplayManager::showClock(bool force, const char* label, uint8_t hour, uint
 }
 
 void DisplayManager::showSettings(
-  uint8_t selectedRow,
+  uint8_t selectedItem,
   bool musicEnabled,
   bool pirEnabled,
   bool use12HourClock,
   bool debugBottomBar
 ) {
-  const char* labels[] = { "Music", "PIR", "AM/PM mode", "Debug bar", "Done" };
+  const uint8_t cellCount = 5;
+  const uint8_t doneItem = cellCount;
+  const int cellWidth = SCREEN_WIDTH / 2;
+  const int cellHeight = HEADER_TOP / 3;
+  const char* labels[] = { "Music", "PIR", "AM/PM", "Debug", "Wi-Fi" };
   const char* values[] = {
     musicEnabled ? "ON" : "OFF",
     pirEnabled ? "ON" : "OFF",
@@ -237,31 +243,53 @@ void DisplayManager::showSettings(
   display_.setTextSize(1);
   display_.setTextWrap(false);
 
-  for (uint8_t row = 0; row < 5; ++row) {
-    int rowY = row < 4 ? row * 12 : HEADER_TOP;
-    int rowHeight = row < 4 ? 12 : HEADER_HEIGHT;
-    bool selected = row == selectedRow;
-    if (selected) {
-      display_.fillRect(0, rowY, SCREEN_WIDTH, rowHeight, SSD1306_WHITE);
+  for (uint8_t item = 0; item < cellCount; ++item) {
+    int cellX = (item % 2) * cellWidth;
+    int cellY = (item / 2) * cellHeight;
+    if (item == selectedItem) {
+      display_.fillRect(cellX, cellY, cellWidth, cellHeight, SSD1306_WHITE);
       display_.setTextColor(SSD1306_BLACK);
     } else {
       display_.setTextColor(SSD1306_WHITE);
     }
 
-    if (row < 4) {
-      display_.setCursor(3, rowY + 2);
-      display_.print(labels[row]);
-      int valueX = SCREEN_WIDTH - strlen(values[row]) * 6 - 3;
-      display_.setCursor(valueX, rowY + 2);
-      display_.print(values[row]);
-    } else {
-      int doneX = (SCREEN_WIDTH - strlen(labels[row]) * 6) / 2;
-      display_.setCursor(doneX, rowY + 4);
-      display_.print(labels[row]);
-    }
+    display_.setCursor(cellX + 3, cellY + 4);
+    display_.print(labels[item]);
+    int valueX = cellX + cellWidth - strlen(values[item]) * 6 - 3;
+    display_.setCursor(valueX, cellY + 4);
+    display_.print(values[item]);
   }
 
+  if (selectedItem == doneItem) {
+    display_.fillRect(0, HEADER_TOP, SCREEN_WIDTH, HEADER_HEIGHT, SSD1306_WHITE);
+    display_.setTextColor(SSD1306_BLACK);
+  } else {
+    display_.setTextColor(SSD1306_WHITE);
+  }
+  printCentered("Done", HEADER_TOP + 4);
+
   display_.display();
+}
+
+void DisplayManager::showWifiSetup(const char* apSsid, const String& ipAddress, const String& status) {
+  setPower(true);
+  displayBlank_ = false;
+  lastDisplayedSeconds_ = -1;
+  lastDisplayedClockHour_ = -1;
+  lastDisplayedClockMinute_ = -1;
+
+  display_.clearDisplay();
+  display_.setTextSize(1);
+  display_.setTextWrap(false);
+  display_.setTextColor(SSD1306_WHITE);
+
+  printCentered(String("Wi-Fi: ") + apSsid, 4);
+  printCentered("Open: " + ipAddress, 18);
+  printCentered(status, 34);
+  printCentered("Press to exit", HEADER_TOP + 4);
+
+  display_.display();
+  batteryMonitor_.clearDisplayDirty();
 }
 
 void DisplayManager::setUse12HourClock(bool enabled) {
@@ -439,6 +467,13 @@ void DisplayManager::printTwoDigits(int value) {
     display_.print("0");
   }
   display_.print(value);
+}
+
+void DisplayManager::printCentered(const String& text, int y) {
+  const int maxChars = SCREEN_WIDTH / 6;
+  String shown = (int)text.length() > maxChars ? text.substring(0, maxChars) : text;
+  display_.setCursor((SCREEN_WIDTH - (int)shown.length() * 6) / 2, y);
+  display_.print(shown);
 }
 
 void DisplayManager::drawClockTime(uint8_t hour24, uint8_t minute, bool colonVisible, bool showHour, bool showMinute) {

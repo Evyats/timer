@@ -1,6 +1,7 @@
 #include "ClockSync.h"
 
 #include "esp_sntp.h"
+#include <Preferences.h>
 #include <esp_sleep.h>
 #include <sys/time.h>
 #include <time.h>
@@ -8,6 +9,9 @@
 const uint32_t WIFI_CONNECT_RETRY_MS = 12000;
 const uint32_t NTP_WAIT_LOG_INTERVAL_MS = 5000;
 const time_t VALID_TIME_THRESHOLD = 1700000000;
+const char* const CREDENTIALS_NAMESPACE = "timer";
+const char* const CREDENTIALS_SSID_KEY = "wifiSsid";
+const char* const CREDENTIALS_PASSWORD_KEY = "wifiPass";
 
 namespace {
 volatile bool ntpTimeSyncReceived = false;
@@ -21,17 +25,13 @@ void onNtpTimeSync(struct timeval*) {
 }
 
 ClockSync::ClockSync(
-  const char* wifiSsid,
-  const char* wifiPassword,
   const char* timezone,
   const char* ntpServer1,
   const char* ntpServer2,
   const char* ntpServer3,
   uint32_t wifiTimeoutMs,
   uint32_t ntpTimeoutMs
-) : wifiSsid_(wifiSsid),
-    wifiPassword_(wifiPassword),
-    timezone_(timezone),
+) : timezone_(timezone),
     ntpServer1_(ntpServer1),
     ntpServer2_(ntpServer2),
     ntpServer3_(ntpServer3),
@@ -53,6 +53,7 @@ ClockSync::ClockSync(
 }
 
 void ClockSync::begin() {
+  loadCredentials();
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
@@ -77,6 +78,12 @@ void ClockSync::startSync() {
     return;
   }
 
+  if (!hasCredentials()) {
+    syncState_ = TIME_SYNC_NO_CREDENTIALS;
+    Serial.println("No Wi-Fi credentials saved; time sync skipped.");
+    return;
+  }
+
   syncState_ = TIME_SYNC_CONNECTING_WIFI;
   syncStartedAtMs_ = millis();
   connectAttempt_ = 0;
@@ -85,10 +92,18 @@ void ClockSync::startSync() {
   beginConnectionAttempt();
 }
 
+void ClockSync::cancelSync() {
+  if (!isSyncActive()) {
+    return;
+  }
+
+  disconnectAndDisableWifi();
+  syncState_ = TIME_SYNC_IDLE;
+  Serial.println("Time sync cancelled.");
+}
+
 bool ClockSync::updateSync() {
-  if (syncState_ == TIME_SYNC_IDLE ||
-      syncState_ == TIME_SYNC_COMPLETE ||
-      syncState_ == TIME_SYNC_FAILED) {
+  if (!isSyncActive()) {
     return false;
   }
 
@@ -192,7 +207,7 @@ void ClockSync::beginConnectionAttempt() {
   Serial.print(" attempt ");
   Serial.println(connectAttempt_);
 
-  WiFi.begin(wifiSsid_, wifiPassword_);
+  WiFi.begin(wifiSsid_.c_str(), wifiPassword_.c_str());
 }
 
 void ClockSync::updateClock(bool pauseClock) {
@@ -261,6 +276,35 @@ bool ClockSync::shouldSync(uint32_t maxAgeSeconds) const {
   return (uint64_t)(nowSeconds - retainedLastNtpSyncEpoch) >= maxAgeSeconds;
 }
 
+void ClockSync::saveCredentials(const String& ssid, const String& password) {
+  Preferences preferences;
+  preferences.begin(CREDENTIALS_NAMESPACE, false);
+  preferences.putString(CREDENTIALS_SSID_KEY, ssid);
+  preferences.putString(CREDENTIALS_PASSWORD_KEY, password);
+  preferences.end();
+
+  wifiSsid_ = ssid;
+  wifiPassword_ = password;
+  Serial.print("Wi-Fi credentials saved for SSID ");
+  Serial.println(wifiSsid_);
+}
+
+bool ClockSync::hasCredentials() const {
+  return wifiSsid_.length() > 0;
+}
+
+const String& ClockSync::wifiPassword() const {
+  return wifiPassword_;
+}
+
+void ClockSync::loadCredentials() {
+  Preferences preferences;
+  preferences.begin(CREDENTIALS_NAMESPACE, true);
+  wifiSsid_ = preferences.getString(CREDENTIALS_SSID_KEY, "");
+  wifiPassword_ = preferences.getString(CREDENTIALS_PASSWORD_KEY, "");
+  preferences.end();
+}
+
 bool ClockSync::hasValidTime() const {
   return hasValidTime_;
 }
@@ -283,6 +327,8 @@ const char* ClockSync::syncStatusText() const {
       return "NO WIFI";
     case TIME_SYNC_COMPLETE:
       return "DONE";
+    case TIME_SYNC_NO_CREDENTIALS:
+      return "SET WIFI";
     case TIME_SYNC_IDLE:
     default:
       return "IDLE";
@@ -290,7 +336,7 @@ const char* ClockSync::syncStatusText() const {
 }
 
 const char* ClockSync::wifiSsid() const {
-  return wifiSsid_;
+  return wifiSsid_.c_str();
 }
 
 uint8_t ClockSync::hour() const {
